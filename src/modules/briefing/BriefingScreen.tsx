@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { T, F } from "../../config/theme";
 import { useStore } from "../../core/store";
 import { Card, PageTitle, HeroCard, Pill, AIBadge, Spinner } from "../../shared/components";
-import { ai, aiJSON } from "../../core/ai";
+import { ai } from "../../core/ai";
 import { db as localDb } from "../../core/db";
 
 export function BriefingScreen() {
@@ -14,12 +14,25 @@ export function BriefingScreen() {
   const generate = async () => {
     if (!data) setLoading(true);
     const name = profile?.name || "lovely";
-    const sys = `You are Nora inside HerNest. Return ONLY valid JSON:
-{"greeting":"","date":"","weatherNote":"","priorities":[{"text":"","tag":""}],"reminders":[""],"affirmation":"","focusWord":"","energyTip":""}
-5 priorities, 3 reminders. Be warm and specific.`;
-    const ctx = `Name: ${name}. Challenge: ${profile?.challenge||"mental load"}. Kids: ${profile?.kids?.map((k:any)=>k.name).join(",")||"none"}.`;
-    const result = await aiJSON(sys, ctx, "morning_briefing", null);
-    if (result) { setData(result); await localDb.cacheBriefing(result); }
+    const date = new Date().toLocaleDateString("en-US", {weekday:"long", month:"long", day:"numeric"});
+    const sys = `You are Nora inside HerNest. Return ONLY valid JSON, no markdown:
+{"greeting":"string","date":"${date}","weatherNote":"string","priorities":[{"text":"string","tag":"Work|Family|Me|Home"}],"reminders":["string"],"affirmation":"string","focusWord":"string","energyTip":"string"}
+Return exactly 5 priorities and 3 reminders. Be warm, specific, and encouraging.`;
+    const ctx = `User name: ${name}. Their biggest challenge: ${profile?.challenge||"managing everything"}. Kids: ${profile?.kids?.map((k:any)=>k.name).join(", ")||"none"}. Role: ${profile?.role||"not specified"}.`;
+    try {
+      const raw = await ai(sys, ctx, "morning_briefing");
+      if (raw.error) {
+        console.error("[Briefing] AI error:", raw.error, raw.code);
+        setLoading(false);
+        return;
+      }
+      const cleaned = raw.text.replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(cleaned);
+      setData(parsed);
+      await localDb.cacheBriefing(parsed);
+    } catch(e) {
+      console.error("[Briefing] Parse error:", e);
+    }
     setLoading(false);
   };
 

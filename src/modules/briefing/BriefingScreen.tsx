@@ -35,7 +35,7 @@ ${memoryCtx}` : ""}`;
     try {
       const raw = await ai(sys, ctx, "morning_briefing");
       if (raw.error) {
-        console.error("[Briefing] AI error:", raw.error, raw.code);
+        console.error("[Briefing] AI error:", raw.error);
         setLoading(false);
         return;
       }

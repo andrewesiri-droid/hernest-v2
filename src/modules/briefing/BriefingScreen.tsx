@@ -3,6 +3,7 @@ import { T, F } from "../../config/theme";
 import { useStore } from "../../core/store";
 import { Card, PageTitle, HeroCard, Pill, AIBadge, Spinner } from "../../shared/components";
 import { ai } from "../../core/ai";
+import { buildMemoryContext } from "../../core/memory";
 import { db as localDb } from "../../core/db";
 
 export function BriefingScreen() {
@@ -18,7 +19,19 @@ export function BriefingScreen() {
     const sys = `You are Nora inside HerNest. Return ONLY valid JSON, no markdown:
 {"greeting":"string","date":"${date}","weatherNote":"string","priorities":[{"text":"string","tag":"Work|Family|Me|Home"}],"reminders":["string"],"affirmation":"string","focusWord":"string","energyTip":"string"}
 Return exactly 5 priorities and 3 reminders. Be warm, specific, and encouraging.`;
-    const ctx = `User name: ${name}. Their biggest challenge: ${profile?.challenge||"managing everything"}. Kids: ${profile?.kids?.map((k:any)=>k.name).join(", ")||"none"}. Role: ${profile?.role||"not specified"}.`;
+    // Load memory context per blueprint — briefing pulls from all modules
+    const memoryCtx = user?.uid ? await buildMemoryContext(user.uid) : "";
+    
+    const ctx = `User name: ${name}. 
+Role: ${profile?.role||"not specified"}.
+Challenge: ${profile?.challenge||"managing everything"}.
+Kids: ${profile?.kids?.map((k:any)=>k.name).join(", ")||"none"}.
+Energy pattern: ${profile?.energyPattern||"morning"}.
+Priorities: ${profile?.priorities?.join(", ")||"family, career"}.
+Trip goal: ${profile?.tripGoal||"none"}.
+${memoryCtx ? `
+Nora's memory:
+${memoryCtx}` : ""}`;
     try {
       const raw = await ai(sys, ctx, "morning_briefing");
       if (raw.error) {

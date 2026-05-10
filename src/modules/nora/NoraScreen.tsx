@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { T, F } from "../../config/theme";
 import { useStore } from "../../core/store";
 import { ai } from "../../core/ai";
+import { extractFactsFromConversation, saveMemoryFacts, loadMemoryFacts, buildMemoryContext } from "../../core/memory";
 import { bus } from "../../core/events";
 import { saveData, loadData } from "../../core/firebase";
 import { Card, Spinner } from "../../shared/components";
@@ -59,8 +60,13 @@ export function NoraScreen() {
     const profileCtx = profile ? `Name: ${profile.name}. Challenge: ${profile.challenge}. Kids: ${profile.kids.map(k => k.name).join(", ") || "none"}.` : "";
     const history = msgs.slice(-8).map(m => ({ role: m.role, content: m.content }));
 
+    // Load memory context per blueprint
+    const memoryCtx = user?.uid ? await buildMemoryContext(user.uid) : "";
+    
     const sys = `You are Nora, a warm intelligent AI Mental Load Manager inside HerNest. ${profileCtx}
-Be concise, warm, and practical. Use the user's name occasionally. 
+${memoryCtx ? `What you know about her:
+${memoryCtx}` : ""}
+Be concise, warm, and practical. Use her name occasionally.
 If they mention tasks, extract them and list them clearly.
 Never lecture. Never judge. Always validate first.
 If they seem overwhelmed, lead with empathy before solutions.`;
@@ -73,9 +79,15 @@ If they seem overwhelmed, lead with empathy before solutions.`;
       const assistantMsg: Message = { role: "assistant", content: result.text, timestamp: Date.now() };
       setMsgs(p => [...p, assistantMsg]);
 
-      // Publish conversation event
+      // Extract facts from conversation per blueprint Memory Service
       if (user?.uid) {
-        await bus.publish("nora.conversation.ended", { messages: [...msgs, userMsg, assistantMsg] }, { userId: user.uid, source: "nora" });
+        const allMsgs = [...msgs, userMsg, assistantMsg];
+        await bus.publish("nora.conversation.ended", { messages: allMsgs }, { userId: user.uid, source: "nora" });
+        
+        // Run fact extraction in background
+        extractFactsFromConversation(allMsgs, user.uid).then(facts => {
+          if (facts.length > 0) saveMemoryFacts(user.uid!, facts);
+        }).catch(() => {});
       }
     }
     setLoading(false);

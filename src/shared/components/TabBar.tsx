@@ -12,11 +12,12 @@ const TABS = [
 ];
 
 const MORE_TABS = [
-  { id: "thrive",  label: "Thrive",  icon: "🌿" },
-  { id: "style",   label: "Style",   icon: "✦" },
-  { id: "trips",   label: "Trips",   icon: "✈" },
-  { id: "circle",  label: "Circle",  icon: "◉" },
-  { id: "profile", label: "Profile", icon: "👩" },
+  { id: "thrive",   label: "Thrive",    icon: "🌿" },
+  { id: "style",    label: "Style",     icon: "✦" },
+  { id: "trips",    label: "Trips",     icon: "✈" },
+  { id: "circle",   label: "Circle",    icon: "◉" },
+  { id: "calendar", label: "Calendar",  icon: "📅" },
+  { id: "profile",  label: "Profile",   icon: "👩" },
 ];
 
 export function TabBar() {

@@ -23,6 +23,7 @@ import { StyleScreen }      from "./modules/style/StyleScreen";
 import { TripsScreen }      from "./modules/trips/TripsScreen";
 import { CircleScreen }     from "./modules/circle/CircleScreen";
 import { ProfileScreen }    from "./modules/profile/ProfileScreen";
+import { CalendarScreen }   from "./modules/calendar/CalendarScreen";
 
 // Global styles
 const globalStyles = `
@@ -167,6 +168,7 @@ function AppContent() {
     style:    <StyleScreen />,
     trips:    <TripsScreen />,
     circle:   <CircleScreen />,
+    calendar: <CalendarScreen />,
     profile:  <ProfileScreen />,
   };
 

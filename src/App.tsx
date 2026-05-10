@@ -2,7 +2,7 @@
 import React, { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "react-hot-toast";
-import { onAuthStateChanged } from "firebase/auth";
+import { onAuthStateChanged, getRedirectResult } from "firebase/auth";
 import { auth } from "./core/firebase";
 import { useStore } from "./core/store";
 import { bus } from "./core/events";
@@ -43,6 +43,7 @@ export default function App() {
 
   // Auth listener
   useEffect(() => {
+    getRedirectResult(auth).catch(() => {});
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (u) {
         setUser({ uid: u.uid, email: u.email || "", displayName: u.displayName });

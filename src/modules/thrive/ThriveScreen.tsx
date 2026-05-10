@@ -17,7 +17,7 @@ export function ThriveScreen() {
     {id:"nourish",label:"Eat well today",icon:"🥗",done:false},
   ]);
 
-  useEffect(()=>{ if(!user?.uid)return; loadData(user.uid,"thrive").then(d=>{ if(d?.water)setWater(d.water); if(d?.sleep)setSleep(d.sleep); if(d?.habits)setHabits(d.habits); }); },[user?.uid]);
+  useEffect(()=>{ if(!user?.uid)return; loadData(user.uid,"thrive").then(d=>{ if(d?.water)setWater(d.water as any); if(d?.sleep)setSleep(d.sleep as any); if(d?.habits)setHabits(d.habits as any); }); },[user?.uid]);
 
   const toggleHabit = async (id:string) => {
     const updated = habits.map(h=>h.id===id?{...h,done:!h.done}:h);

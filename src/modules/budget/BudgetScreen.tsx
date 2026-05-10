@@ -27,7 +27,7 @@ export function BudgetScreen() {
   const spent = cats.reduce((a,c)=>a+c.spent,0);
   const pct = total > 0 ? Math.round(spent/total*100) : 0;
 
-  useEffect(()=>{ if(!user?.uid)return; loadData(user.uid,"budget").then(d=>{ if(d?.categories)setCats(d.categories); if(d?.expenses)setExpenses(d.expenses); }); },[user?.uid]);
+  useEffect(()=>{ if(!user?.uid)return; loadData(user.uid,"budget").then(d=>{ if(d?.categories)setCats(d.categories as any); if(d?.expenses)setExpenses(d.expenses as any); }); },[user?.uid]);
 
   const logExpense = async () => {
     if (!amount || isNaN(Number(amount))) return;

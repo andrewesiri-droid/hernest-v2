@@ -13,7 +13,7 @@ export function TripsScreen() {
   const [showAdd, setShowAdd] = useState(false);
   const [dest, setDest] = useState(""); const [date, setDate] = useState(""); const [nights, setNights] = useState(""); const [budget, setBudget] = useState("");
 
-  useEffect(()=>{ if(!user?.uid)return; loadData(user.uid,"trips").then(d=>{ if(d?.trips)setTrips(d.trips); }); },[user?.uid]);
+  useEffect(()=>{ if(!user?.uid)return; loadData(user.uid,"trips").then(d=>{ if(d?.trips)setTrips(d.trips as any); }); },[user?.uid]);
 
   const addTrip = async () => {
     if (!dest||!date) return;

@@ -16,7 +16,7 @@ export function HomeScreen() {
 
   useEffect(() => {
     if (!user?.uid) return;
-    loadData(user.uid, "tasks").then(d => { if (d?.tasks) setTasks(d.tasks.slice(0, 3)); });
+    loadData(user.uid, "tasks").then(d => { if (d?.tasks) setTasks((d.tasks as any[]).slice(0, 3)); });
   }, [user?.uid]);
 
   return (

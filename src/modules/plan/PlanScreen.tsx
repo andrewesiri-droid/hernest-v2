@@ -17,7 +17,7 @@ export function PlanScreen() {
 
   useEffect(() => {
     if (!user?.uid) return;
-    loadData(user.uid, "tasks").then(d => { if (d?.tasks) setTasks(d.tasks); });
+    loadData(user.uid, "tasks").then(d => { if (d?.tasks) setTasks(d.tasks as any); });
   }, [user?.uid]);
 
   const addTask = async () => {

@@ -187,21 +187,22 @@ export default function App() {
     </>
   );
 
-  const screens: Record<string, React.ReactNode> = {
-    home:     <EB name="Home"><HomeScreen /></EB>,
-    nora:     <EB name="Nora"><NoraScreen /></EB>,
-    plan:     <EB name="Plan"><PlanScreen /></EB>,
-    budget:   <EB name="Budget"><BudgetScreen /></EB>,
-    briefing: <BriefingScreen />,
-    thrive:   <EB name="Thrive"><ThriveScreen /></EB>,
-    style:    <StyleScreen />,
-    trips:    <TripsScreen />,
-    circle:   <EB name="Circle"><CircleScreen /></EB>,
-    family:   <EB name="Family"><FamilyScreen /></EB>,
-    calendar: <CalendarScreen />,
-    settings: <SettingsScreen />,
-    upgrade:  <UpgradeScreen />,
-    profile:  <ProfileScreen />,
+  const renderScreen = () => {
+    switch (activeTab) {
+      case "home":     return <EB name="Home"><HomeScreen /></EB>;
+      case "nora":     return <EB name="Nora"><NoraScreen /></EB>;
+      case "plan":     return <EB name="Plan"><PlanScreen /></EB>;
+      case "budget":   return <EB name="Budget"><BudgetScreen /></EB>;
+      case "briefing": return <EB name="Briefing"><BriefingScreen /></EB>;
+      case "thrive":   return <EB name="Thrive"><ThriveScreen /></EB>;
+      case "style":    return <EB name="Style"><StyleScreen /></EB>;
+      case "trips":    return <EB name="Trips"><TripsScreen /></EB>;
+      case "circle":   return <EB name="Circle"><CircleScreen /></EB>;
+      case "calendar": return <EB name="Calendar"><CalendarScreen /></EB>;
+      case "profile":  return <EB name="Profile"><ProfileScreen /></EB>;
+      case "settings": return <EB name="Settings"><SettingsScreen /></EB>;
+      default:         return <EB name="Home"><HomeScreen /></EB>;
+    }
   };
 
   // ── Wire 1: Graph event bus ────────────────────────────────────────

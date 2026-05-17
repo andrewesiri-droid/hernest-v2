@@ -82,33 +82,19 @@ class HerNestDB extends Dexie {
     });
   }
 
-  getWindowKey(): string {
-    const hour = new Date().getHours();
-    const today = new Date().toISOString().split("T")[0];
-    if (hour >= 6 && hour < 12) return `morning_${today}`;
-    if (hour >= 12 && hour < 17) return `afternoon_${today}`;
-    return `evening_${today}`;
-  }
-
   async getTodayBriefing(): Promise<CachedBriefing | undefined> {
-    return this.briefings.get(this.getWindowKey());
+    const today = new Date().toISOString().split("T")[0];
+    return this.briefings.get(today);
   }
 
   async cacheBriefing(data: Record<string, unknown>): Promise<void> {
+    const today = new Date().toISOString().split("T")[0];
     await this.briefings.put({
-      date: this.getWindowKey(),
+      date: today,
       data,
       generatedAt: Date.now(),
       stale: false,
     });
-  }
-
-  async clearBriefing(): Promise<void> {
-    try {
-      await this.briefings.clear();
-    } catch (e) {
-      console.warn("[DB] clearBriefing failed:", e);
-    }
   }
 }
 

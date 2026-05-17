@@ -10,7 +10,6 @@ export type EventType =
   | "profile.updated"
   | "profile.goal.added"
   // Plan
-  | "family.updated"
   | "plan.task.created"
   | "plan.task.completed"
   | "plan.task.deleted"
@@ -35,13 +34,6 @@ export type EventType =
   | "style.preference.updated"
   // Trips
   | "trips.trip.created"
-  | "partner.invite.sent"
-  | "partner.invite.accepted"
-  | "account.deleted"
-  | "settings.updated"
-  | "briefing.invalidate"
-  | "calendar.connected"
-  | "calendar.synced"
   | "trips.trip.approaching"
   | "trips.trip.completed"
   // Circle

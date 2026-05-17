@@ -137,7 +137,7 @@ export function FamilyScreen() {
 
           if (seeded.length > 0) {
             setFamilyMembers(seeded);
-            await saveData(user.uid, "family", { members: seeded, tasks: [], meals: [] });
+            await saveData(user.uid, "family", JSON.parse(JSON.stringify({ members: seeded, tasks: [], meals: [] })));
           }
         }
       }
@@ -151,7 +151,7 @@ export function FamilyScreen() {
       m.id === memberId ? { ...m, schoolInfo: schoolDraft } : m
     );
     setFamilyMembers(updated);
-    await saveData(user!.uid, "family", { members: updated, tasks, meals });
+    await saveData(user!.uid, "family", JSON.parse(JSON.stringify({ members: updated, tasks, meals })));
     await bus.publish("family.updated", { memberId }, { userId: user!.uid, source: "family" });
     setSchoolEditId(null);
     toast.success("School calendar saved ✦");
@@ -159,7 +159,7 @@ export function FamilyScreen() {
 
   const persistAll = async (members: FamilyMember[], t: FamilyTask[], m: MealDay[]) => {
     if (!user?.uid) return;
-    await saveData(user.uid, "family", { members, tasks: t, meals: m });
+    await saveData(user.uid, "family", JSON.parse(JSON.stringify({ members, tasks: t, meals: m })));
   };
 
   const saveMember = async () => {
@@ -334,7 +334,7 @@ Answer in 3-4 warm, specific, actionable sentences. Use family members names.`;
                     m.id === schoolEditId ? { ...m, schoolInfo: { ...m.schoolInfo, country: m.schoolInfo?.country||"US", schoolType: m.schoolInfo?.schoolType||"public", calendarEvents: events } } : m
                   );
                   setFamilyMembers(updated);
-                  await saveData(user!.uid, "family", { members: updated, tasks, meals });
+                  await saveData(user!.uid, "family", JSON.parse(JSON.stringify({ members: updated, tasks, meals })));
                   // Sync to master calendar
                   const calendarData = await loadData(user!.uid, "calendar");
                   const existing = ((calendarData?.events as any[]) || []).filter((e:any) => e.child !== member.name);

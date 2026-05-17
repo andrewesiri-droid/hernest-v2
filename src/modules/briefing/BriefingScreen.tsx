@@ -91,10 +91,10 @@ export function BriefingScreen() {
 
       const date = new Date().toLocaleDateString("en-US", { weekday:"long", month:"long", day:"numeric" });
 
-      const sys = `You are Nora, ${appCtx.name}'s AI chief of staff inside HerNest.
+      const sys = `You are Nora, ${appCtx?.name || profile?.name || "her"}'s AI chief of staff inside HerNest.
 Generate her Morning Briefing as a warm, intelligent, SPECIFIC summary.
 
-${familyRoster ? familyRoster + "\n" : ""}TONE: ${appCtx.tone} (${appCtx.toneConfig.label})
+${familyRoster ? familyRoster + "\n" : ""}TONE: ${appCtx?.tone || "steady"} (${appCtx?.toneConfig?.label || "Steady"})
 RULES:
 - Be SPECIFIC — use real names, amounts, dates from the data
 - Be CONCISE — every word earns its place
@@ -116,7 +116,7 @@ Return ONLY valid JSON:
   "circle": {"checkinMessage":"optional","birthdayAlert":"optional","communityNote":"optional"},
   "energy": {"predictedLevel":"high|medium|low|very-low","predictionBasis":"based on X sleep + Y mood","tip":"specific energy tip","scheduleSuggestion":"when to tackle what"},
   "affirmation": {"text":"warm personal affirmation","theme":"${appCtx.toneConfig.affirmationTheme}"},
-  "travelBrief": ${appCtx.trips.isClose ? '{"urgentActions":[""],"packingTip":"","weatherHint":"","kidsTip":"","excitement":""}' : 'null'}
+  "travelBrief": ${appCtx?.trips?.isClose ? '{"urgentActions":[""],"packingTip":"","weatherHint":"","kidsTip":"","excitement":""}' : 'null'}
 }
 Return exactly 5 priorities. Include trips/travelBrief only if data exists.`;
 

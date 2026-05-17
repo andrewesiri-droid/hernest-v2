@@ -8,7 +8,7 @@ export type Feature =
   | "trip_planner" | "school_calendar" | "receipt_scanner"
   | "csv_import" | "gift_advisor" | "briefing_ask"
   | "sunday_reset" | "travel_brief" | "wellness_score"
-  | "circle_match" | "debrief";
+  | "circle_match" | "debrief" | "household_cfo";
 
 const MODEL_MAP: Record<Feature, string> = {
   morning_briefing: AI.SONNET,
@@ -28,6 +28,7 @@ const MODEL_MAP: Record<Feature, string> = {
   travel_brief:     AI.HAIKU,
   circle_match:     AI.HAIKU,
   debrief:          AI.HAIKU,
+  household_cfo:    AI.SONNET,
 };
 
 async function getIdToken(): Promise<string | null> {

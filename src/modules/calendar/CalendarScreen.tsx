@@ -237,7 +237,7 @@ export function CalendarScreen() {
       try {
         const idToken = await auth.currentUser?.getIdToken();
         if (!idToken) return;
-        const res = await fetch(`${url}?tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone)}`, { headers: { Authorization: `Bearer ${idToken}` } });
+        const res = await fetch(`${url}?uid=${user?.uid}&tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone)}`, { headers: { Authorization: `Bearer ${idToken}` } });
         const data = await res.json();
         console.log("[Calendar] fetched from", url, data.count, "events");
         if (data.events?.length > 0) {

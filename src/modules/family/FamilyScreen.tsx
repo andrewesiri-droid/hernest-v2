@@ -246,6 +246,7 @@ Mon-Sun. Family-friendly, varied, budget-conscious. Kids: ${kids}. Diet: ${diet}
     setNoraLoading(true);
     const roster = familyMembers.map(m => `${m.name} (${m.role}${m.age ? ", age " + m.age : ""}${m.notes ? ", " + m.notes : ""})`).join("; ");
     const sys = `You are Nora, family AI chief of staff. Family: ${roster || "not set up yet"}.
+CRITICAL: Never invent specific facts — names, events, dates, tasks, appointments. Only reference what is explicitly provided. If data is missing, say so warmly and suggest how to add it.
 Profile: ${(profile as any)?.name}, ${(profile as any)?.role || ""}.
 Answer in 3-4 warm, specific, actionable sentences. Use family members names.`;
     const result = await ai(sys, noraInput, "nora_chat");

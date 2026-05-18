@@ -146,7 +146,7 @@ export function PlanScreen() {
     if (!newsletterText.trim()) return;
     setExtracting(true);
 
-    const sys = `You are Nora extracting school events. Return ONLY valid JSON array:
+    const sys = `You are Nora extracting school events. ONLY extract events explicitly mentioned in the text — never infer or invent events not clearly stated. Return ONLY valid JSON array:
 [{
   "title":"string",
   "date":"YYYY-MM-DD",

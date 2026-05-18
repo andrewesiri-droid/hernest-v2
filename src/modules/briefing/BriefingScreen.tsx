@@ -100,7 +100,7 @@ RULES:
 - Be CONCISE — every word earns its place
 - Be WARM — this is the first thing she reads
 - Be ACTIONABLE — every priority needs a clear next step
-- NEVER invent facts not in the data
+- NEVER invent facts not in the data. If data is missing, say "I don't have that info yet" — never fill gaps with plausible-sounding details.
 - If tone is tired/struggling: reduce demands, increase compassion
 - If tone is thriving: energise and celebrate
 
@@ -154,7 +154,7 @@ Return exactly 5 priorities. Include trips/travelBrief only if data exists.`;
     if (!askInput.trim() || asking) return;
     setAsking(true);
     const ctxStr = ctx ? `Today's tone: ${ctx.tone}. Focus: ${briefing?.focusWord?.word}. Tasks: ${ctx.tasks.total} pending. Budget: ${ctx.budget?.status}.` : "";
-    const result = await ai(`You are Nora. ${ctxStr} Answer in 2-3 warm, specific sentences. Never generic.`, askInput, "briefing_ask");
+    const result = await ai(`You are Nora. ${ctxStr} Answer in 2-3 warm, specific sentences. Never generic. CRITICAL: Only reference facts explicitly provided in the context above — never invent events, names, amounts, or dates.`, askInput, "briefing_ask");
     if (!result.error) setAskResp(result.text);
     setAsking(false);
   };

@@ -50,7 +50,7 @@ function SchoolNewsletterInput({ childName, userId, onEventsAdded }: {
     if (!text.trim()) return;
     setLoading(true);
     try {
-      const sys = `Extract school events from this newsletter for ${childName}. Return ONLY valid JSON array:
+      const sys = `Extract school events from this newsletter for ${childName}. ONLY extract events explicitly mentioned — never invent or infer events not in the text. Return ONLY valid JSON array:
 [{"title":"string","date":"YYYY-MM-DD","time":"string or null","requiresAction":true/false,"actionType":"permission-slip|payment|rsvp|supply-list|costume|none","notes":"string or null"}]
 Today: ${new Date().toISOString().split("T")[0]}. Extract ALL events and deadlines.`;
       const result = await ai(sys, text, "school_calendar");

@@ -45,26 +45,53 @@ export default async function handler(req, res) {
     const now = new Date();
     const timeMin = now.toISOString();
     const timeMax = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000).toISOString();
+    const headers = { Authorization: `Bearer ${accessToken}` };
 
-    const eventsRes = await fetch(
-      `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${timeMin}&timeMax=${timeMax}&singleEvents=true&orderBy=startTime&maxResults=50`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
+    // Step 1: Get all calendars
+    const listRes = await fetch(
+      "https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=50",
+      { headers }
     );
-    const data = await eventsRes.json();
-    if (data.error) return res.status(401).json({ error: data.error.message });
+    const listData = await listRes.json();
+    const calendars = (listData.items || []).filter(c => c.accessRole !== "freeBusyReader");
+    console.log("[Google] Found calendars:", calendars.map(c => c.summary));
 
-    const events = (data.items || []).map(e => ({
-      id:     `google_${e.id}`,
-      title:  e.summary || "Event",
-      date:   (e.start?.date || e.start?.dateTime || "").split("T")[0],
-      time:   e.start?.dateTime ? new Date(e.start.dateTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : undefined,
-      source: "google",
-      color:  "#4285F4",
-      allDay: !!e.start?.date,
-    }));
+    // Step 2: Fetch events from each calendar
+    let allEvents = [];
+    for (const cal of calendars) {
+      try {
+        const evRes = await fetch(
+          `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(cal.id)}/events?timeMin=${timeMin}&timeMax=${timeMax}&singleEvents=true&orderBy=startTime&maxResults=50`,
+          { headers }
+        );
+        const evData = await evRes.json();
+        if (evData.error) continue;
+        const events = (evData.items || []).map(e => ({
+          id:     `google_${e.id}`,
+          title:  e.summary || "Event",
+          date:   (e.start?.date || e.start?.dateTime || "").split("T")[0],
+          time:   e.start?.dateTime ? new Date(e.start.dateTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : undefined,
+          source: "google",
+          color:  cal.backgroundColor || "#4285F4",
+          allDay: !!e.start?.date,
+          calendar: cal.summary,
+        }));
+        allEvents = allEvents.concat(events);
+      } catch (e) {
+        console.error("[Google] Error fetching calendar:", cal.summary, e.message);
+      }
+    }
 
-    console.log("[Google Calendar] returning", events.length, "events");
-    res.json({ events });
+    // Deduplicate by id
+    const seen = new Set();
+    allEvents = allEvents.filter(e => {
+      if (seen.has(e.id)) return false;
+      seen.add(e.id);
+      return true;
+    });
+
+    console.log("[Google Calendar] returning", allEvents.length, "events from", calendars.length, "calendars");
+    res.json({ events: allEvents });
   } catch (e) {
     console.error("[Google Calendar fetch]", e);
     res.status(500).json({ error: "Failed to fetch events" });

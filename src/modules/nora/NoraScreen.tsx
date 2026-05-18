@@ -75,6 +75,8 @@ const QUICK_REPLIES = [
 
 export function NoraScreen() {
   const { user, profile, familyMembers, householdSnapshot, setHouseholdSnapshot } = useStore();
+  const adaptiveConfig = useAdaptiveUX(householdSnapshot ?? null);
+  const { noraPack } = useContextGraph();
   const [msgs, setMsgs]       = useState<Msg[]>([]);
   const [input, setInput]     = useState("");
   const [loading, setLoading] = useState(false);

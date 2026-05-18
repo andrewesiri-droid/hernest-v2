@@ -331,7 +331,7 @@ export function TripsScreen() {
       returnDate: retDate || undefined,
       nights,
       state: daysUntil(depDate) > 30 ? "booking" : "preparing",
-      travellers: travellers.filter(t => t.name.trim()),
+      travellers: travellers.filter(t => t.name.trim() && (t as any).selected !== false),
       budget: { total: totalBudget, currency, breakdown: estimateBudgetBreakdown(totalBudget), spent: 0 },
       itinerary: [],
       packingList: [],
@@ -528,11 +528,22 @@ Weather: pack for typical ${trip.destination} conditions.`;
               </div>
             </div>
 
-            {/* Travellers — pre-populated from profile */}
+            {/* Travellers — select from profile + add guests */}
             <p style={{ fontFamily: F.sans, fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: T.taupe, margin: "0 0 10px" }}>WHO'S COMING</p>
             <div style={{ marginBottom: 12 }}>
               {travellers.map((t, i) => (
-                <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.linen}` }}>
+                <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: `1px solid ${T.linen}` }}>
+                  {t.fromProfile ? (
+                    <button onClick={() => setTravellers(prev => prev.map((tt, ti) => ti === i ? { ...tt, selected: !(tt as any).selected } : tt))}
+                      style={{ width: 24, height: 24, borderRadius: 8, border: `2px solid ${(t as any).selected === false ? T.linen : T.sage}`, background: (t as any).selected === false ? "transparent" : T.sage, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 13, cursor: "pointer" }}>
+                      {(t as any).selected !== false ? "✓" : ""}
+                    </button>
+                  ) : (
+                    <button onClick={() => setTravellers(prev => prev.filter((_, ti) => ti !== i))}
+                      style={{ width: 24, height: 24, borderRadius: 8, border: `2px solid ${T.blush}40`, background: "none", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", color: T.blush, fontSize: 14, cursor: "pointer" }}>
+                      ×
+                    </button>
+                  )}
                   <span style={{ fontSize: 18, flexShrink: 0 }}>{t.type === "adult" ? "👩" : t.age < 2 ? "👶" : "🧒"}</span>
                   <input value={t.name} onChange={e => setTravellers(prev => prev.map((tt, ti) => ti === i ? { ...tt, name: e.target.value } : tt))}
                     placeholder="Name"
@@ -543,10 +554,6 @@ Weather: pack for typical ${trip.destination} conditions.`;
                     <option value="child">Child</option>
                     <option value="infant">Infant</option>
                   </select>
-                  {!t.fromProfile && (
-                    <button onClick={() => setTravellers(prev => prev.filter((_, ti) => ti !== i))}
-                      style={{ background: "none", border: "none", color: T.taupe, cursor: "pointer", fontSize: 16, padding: 0 }}>×</button>
-                  )}
                 </div>
               ))}
             </div>
@@ -698,16 +705,20 @@ Weather: pack for typical ${trip.destination} conditions.`;
       </div>
 
       {/* ── TABS ──────────────────────────────────────────────────── */}
-      <div style={{ display: "flex", gap: 6, marginBottom: 16, overflowX: "auto", paddingBottom: 4, scrollbarWidth: "none" }}>
-        {(["overview", "itinerary", "packing", "checklist", "budget", "ask"] as const).map(t => (
-          <Pill key={t} active={detailTab === t} onClick={() => setDetailTab(t)}
-            label={
-              t === "overview" ? "Overview" :
-              t === "itinerary" ? "📅 Itinerary" :
-              t === "packing" ? `🧳 Pack${totalItems > 0 ? ` ${checkedItems}/${totalItems}` : ""}` :
-              t === "checklist" ? `✓ Prep${completedTasks > 0 ? ` ${completedTasks}/${trip.preDeparture.length}` : ""}` :
-              t === "budget" ? "💰 Budget" : "✦ Ask CFO"
-            } />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6, marginBottom: 16 }}>
+        {([
+          { id: "overview",  label: "Overview" },
+          { id: "itinerary", label: "📅 Itinerary" },
+          { id: "packing",   label: `🧳 Pack${totalItems > 0 ? ` ${checkedItems}/${totalItems}` : ""}` },
+          { id: "checklist", label: `✓ Prep${completedTasks > 0 ? ` ${completedTasks}/${trip.preDeparture.length}` : ""}` },
+          { id: "budget",    label: "💰 Budget" },
+          { id: "ask",       label: "✦ Ask CFO" },
+          { id: "edit",      label: "✎ Edit" },
+        ] as const).map(t => (
+          <button key={t.id} onClick={() => setDetailTab(t.id as any)}
+            style={{ padding: "8px 4px", borderRadius: 10, border: `1.5px solid ${detailTab === t.id ? T.esp : T.linen}`, background: detailTab === t.id ? T.esp : "#fff", fontFamily: F.sans, fontSize: 11, fontWeight: detailTab === t.id ? 700 : 400, color: detailTab === t.id ? "#fff" : T.taupe, cursor: "pointer", textAlign: "center" }}>
+            {t.label}
+          </button>
         ))}
       </div>
 
@@ -950,6 +961,40 @@ Weather: pack for typical ${trip.destination} conditions.`;
             ✦ Ask CFO: Can we afford this?
           </button>
         </>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════
+          TAB: EDIT
+      ══════════════════════════════════════════════════════════════ */}
+      {detailTab === "edit" && (
+        <Card>
+          <p style={{ fontFamily: F.sans, fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: T.taupe, margin: "0 0 16px" }}>EDIT TRIP</p>
+          <input defaultValue={trip.destination}
+            onBlur={async e => { const updated = { ...trip, destination: e.target.value }; const all = trips.map(t => t.id === updated.id ? updated : t); await persist(all); setActiveTrip(normTrip(updated)); }}
+            style={{ width: "100%", background: T.sand, border: `1.5px solid ${T.linen}`, borderRadius: 12, padding: "12px 14px", fontFamily: F.sans, fontSize: 16, color: T.esp, outline: "none", marginBottom: 12, boxSizing: "border-box" as any }} />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+            <div>
+              <p style={{ fontFamily: F.sans, fontSize: 10, fontWeight: 700, color: T.taupe, margin: "0 0 6px", textTransform: "uppercase", letterSpacing: "0.08em" }}>Departure</p>
+              <input type="date" defaultValue={trip.departureDate}
+                onBlur={async e => { const updated = { ...trip, departureDate: e.target.value }; const all = trips.map(t => t.id === updated.id ? updated : t); await persist(all); setActiveTrip(normTrip(updated)); }}
+                style={{ width: "100%", background: T.sand, border: `1.5px solid ${T.linen}`, borderRadius: 10, padding: "10px 12px", fontFamily: F.sans, fontSize: 14, color: T.esp, outline: "none", boxSizing: "border-box" as any }} />
+            </div>
+            <div>
+              <p style={{ fontFamily: F.sans, fontSize: 10, fontWeight: 700, color: T.taupe, margin: "0 0 6px", textTransform: "uppercase", letterSpacing: "0.08em" }}>Return</p>
+              <input type="date" defaultValue={trip.returnDate}
+                onBlur={async e => { const updated = { ...trip, returnDate: e.target.value }; const all = trips.map(t => t.id === updated.id ? updated : t); await persist(all); setActiveTrip(normTrip(updated)); }}
+                style={{ width: "100%", background: T.sand, border: `1.5px solid ${T.linen}`, borderRadius: 10, padding: "10px 12px", fontFamily: F.sans, fontSize: 14, color: T.esp, outline: "none", boxSizing: "border-box" as any }} />
+            </div>
+          </div>
+          <p style={{ fontFamily: F.sans, fontSize: 10, fontWeight: 700, color: T.taupe, margin: "0 0 6px", textTransform: "uppercase", letterSpacing: "0.08em" }}>Budget</p>
+          <input type="number" defaultValue={trip.budget.total}
+            onBlur={async e => { const total = parseFloat(e.target.value) || 0; const updated = { ...trip, budget: { ...trip.budget, total, breakdown: estimateBudgetBreakdown(total) } }; const all = trips.map(t => t.id === updated.id ? updated : t); await persist(all); setActiveTrip(normTrip(updated)); }}
+            style={{ width: "100%", background: T.sand, border: `1.5px solid ${T.linen}`, borderRadius: 12, padding: "12px 14px", fontFamily: F.sans, fontSize: 16, color: T.esp, outline: "none", marginBottom: 16, boxSizing: "border-box" as any }} />
+          <button onClick={async () => { const all = trips.filter(t => t.id !== trip.id); await persist(all); setActiveTrip(null); }}
+            style={{ width: "100%", padding: "12px", background: `${T.blush}15`, border: `1px solid ${T.blush}40`, borderRadius: 12, fontFamily: F.sans, fontSize: 13, color: T.blush, cursor: "pointer" }}>
+            Delete Trip
+          </button>
+        </Card>
       )}
 
       {/* ══════════════════════════════════════════════════════════════

@@ -307,7 +307,8 @@ Personalise quantities to ${trip.nights} nights. Include weather-appropriate ite
 
     if (!result.error) {
       try {
-        const s=result.text.indexOf("{"); const e=result.text.lastIndexOf("}"); if(s===-1||e===-1) throw new Error("No JSON"); const parsed = JSON.parse(result.text.slice(s,e+1));
+        const cleanText = result.text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+        const s=cleanText.indexOf("{"); const e=cleanText.lastIndexOf("}"); if(s===-1||e===-1) throw new Error("No JSON"); const parsed = JSON.parse(cleanText.slice(s,e+1));
         const sections: PackingSection[] = parsed.sections
           .filter((s:any) => s.items?.length > 0)
           .map((s:any) => ({

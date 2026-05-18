@@ -99,22 +99,27 @@ export default async function handler(req, res) {
     const t3 = await r3.text();
     console.log("[Apple] PROPFIND3 status:", r3.status);
 
-    // Extract calendar URLs (those with VEVENT support)
+    // Extract calendar URLs from PROPFIND3
     const calUrls = [];
-    const responses = t3.split("<response>").slice(1);
+    const homeBase = homeUrl.replace(/\/+$/, "");
+    const hostMatch = homeUrl.match(/^(https?:\/\/[^/]+)/);
+    const homeHost = hostMatch ? hostMatch[1] : "https://caldav.icloud.com";
+
+    const responses = t3.split(/<response[\s>]/i).slice(1);
     for (const resp of responses) {
-      if (resp.includes("VEVENT") || resp.includes("calendar")) {
-        const hrefMatch = resp.match(/<href[^>]*>([^<]+)<\/href>/);
-        if (hrefMatch) {
-          const url = hrefMatch[1].startsWith("http") ? hrefMatch[1] : `https://caldav.icloud.com${hrefMatch[1]}`;
-          if (!calUrls.includes(url) && url !== homeUrl) calUrls.push(url);
-        }
+      const hrefMatch = resp.match(/<href[^>]*>([^<]+)<\/href>/i);
+      if (!hrefMatch) continue;
+      const href = hrefMatch[1].trim();
+      const url = href.startsWith("http") ? href : `${homeHost}${href.startsWith("/") ? "" : "/"}${href}`;
+      // Skip the home URL itself, only add sub-calendars
+      if (url.endsWith("/") && url !== homeUrl && url !== homeBase + "/" && !calUrls.includes(url)) {
+        calUrls.push(url);
       }
     }
-    console.log("[Apple] Found calendar URLs:", calUrls.length);
+    console.log("[Apple] Found calendar URLs:", calUrls.length, calUrls);
 
     if (calUrls.length === 0) {
-      // Fallback: try homeUrl directly
+      // No sub-calendars found — use home directly
       calUrls.push(homeUrl);
     }
 

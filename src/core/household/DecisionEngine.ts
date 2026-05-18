@@ -197,7 +197,7 @@ export async function analyzeScenario(
   let result: HerNestCFOResponse;
   try {
     const mode = selectDecisionMode(question);
-    const v2 = await runDecisionV2({ question, snapshot, userId, profileName, mode });
+    const v2 = await runDecisionV2({ question, snapshot, userId, householdState: null, profileName, mode });
     const rec = v2.recommendation;
     result = {
       summary: rec?.summary || question,
@@ -205,10 +205,10 @@ export async function analyzeScenario(
       observation: v2.purpose || question,
       whyItMatters: rec?.why?.join(" ") || "",
       financialImpact: v2.uncertainties?.map(u => u.description || "").join("; ") || "",
-      tradeoffs: v2.tradeoffs?.map(t => `${t.option || ""}: ${t.description || ""}`) || [],
+      tradeoffs: v2.tradeoffs?.map(t => `${t.optionA} vs ${t.optionB}: ${t.tradeoffSummary}`) || [],
       options: v2.options?.map(o => `${o.name}: ${o.description || ""}`) || [],
       recommendedAction: rec?.summary || "Review the analysis above.",
-      nextSteps: v2.nextActions?.map(a => a.action || "") || [],
+      nextSteps: v2.nextActions?.map(a => a.label) || [],
       confidence: v2.confidence,
       confidenceLevel: v2.confidence === "high" ? 85 : v2.confidence === "medium" ? 60 : 35,
       assumptions: v2.assumptions || [],

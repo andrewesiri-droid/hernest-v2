@@ -1,246 +1,342 @@
 import React, { useState, useEffect } from "react";
-import { trackEvent } from "../../core/analytics";
 import { T, F } from "../../config/theme";
 import { useStore } from "../../core/store";
-import { Card, PageTitle, HeroCard, Pill, Button, Input, AIBadge, Spinner, ProgressBar } from "../../shared/components";
+import { Card, PageTitle, Pill, AIBadge, Spinner, ProgressBar, Button } from "../../shared/components";
 import { saveData, loadData } from "../../core/firebase";
 import { ai } from "../../core/ai";
 import { bus } from "../../core/events";
+import { analyzeScenario, buildHouseholdSnapshot } from "../../core/household";
 import toast from "react-hot-toast";
 
-// ── Types per blueprint ────────────────────────────────────────────
-interface Traveller { name: string; age: number; type: "adult"|"child"|"infant"; }
-interface BudgetBreakdown { flights: number; accommodation: number; food: number; activities: number; transport: number; contingency: number; }
-interface Activity { time: string; title: string; type: string; location: string; duration: number; cost: number; bookingRequired: boolean; mumMoment?: string; }
-interface ItineraryDay { day: number; date: string; theme: string; morning?: string; afternoon?: string; evening?: string; tip?: string; mumMoment?: string; activities?: any[]; meals?: { breakfast?: string; lunch?: string; dinner?: string }; tips?: string[]; }
-interface PackingItem { name: string; quantity: number; essential: boolean; checked: boolean; custom: boolean; weatherDependent?: boolean; }
-interface PackingSection { name: string; items: PackingItem[]; }
-interface PreDepartureTask { task: string; deadline: string; completed: boolean; category: "booking"|"document"|"health"|"packing"|"home"|"notification"; }
-interface Document { type: "passport"|"visa"|"insurance"|"booking"|"health"; status: "needed"|"ready"|"expired"; notes?: string; }
+// ═══════════════════════════════════════════════════════════════════
+// TYPES
+// ═══════════════════════════════════════════════════════════════════
+
+export type TripState =
+  | "dreaming" | "evaluating" | "booking" | "preparing"
+  | "countdown" | "travel_day" | "in_trip" | "returning"
+  | "recovery" | "completed";
+
+interface Traveller {
+  id: string;
+  name: string;
+  age: number;
+  type: "adult" | "child" | "infant";
+  role?: "partner" | "kid" | "parent" | "friend" | "other";
+  fromProfile?: boolean;
+}
+
+interface BudgetBreakdown {
+  flights: number;
+  accommodation: number;
+  food: number;
+  activities: number;
+  transport: number;
+  contingency: number;
+}
+
+interface ItineraryDay {
+  day: number;
+  date: string;
+  theme: string;
+  morning: string;
+  afternoon: string;
+  evening: string;
+  tip: string;
+  mumMoment: string;
+}
+
+interface PackingItem {
+  name: string;
+  quantity: number;
+  essential: boolean;
+  checked: boolean;
+  custom: boolean;
+  weatherDependent?: boolean;
+  assignedTo?: string;
+}
+
+interface PackingSection {
+  name: string;
+  items: PackingItem[];
+}
+
+interface PreDepartureTask {
+  task: string;
+  deadline: string;
+  completed: boolean;
+  category: "booking" | "document" | "health" | "packing" | "home" | "notification";
+  assignedTo?: string;
+}
+
+interface TripDocument {
+  type: "passport" | "visa" | "insurance" | "booking" | "health";
+  status: "needed" | "ready" | "expired";
+  traveller?: string;
+  notes?: string;
+}
+
+interface ReadinessScore {
+  overall: number;
+  documents: number;
+  budget: number;
+  packing: number;
+  booking: number;
+  tasks: number;
+}
 
 interface Trip {
-  id: string; destination: string; country: string;
-  departureDate: string; returnDate?: string; nights: number;
+  id: string;
+  destination: string;
+  country: string;
+  departureDate: string;
+  returnDate?: string;
+  nights: number;
+  state: TripState;
   travellers: Traveller[];
-  budget: { total: number; currency: string; breakdown: BudgetBreakdown };
-  status: "planning"|"booked"|"ready"|"departed"|"completed";
+  budget: { total: number; currency: string; breakdown: BudgetBreakdown; spent?: number };
   itinerary: ItineraryDay[];
   packingList: PackingSection[];
   preDeparture: PreDepartureTask[];
-  documents: Document[];
+  documents: TripDocument[];
+  stressLevel?: "low" | "moderate" | "high";
+  householdImpact?: string;
   createdAt: number;
 }
 
-const safeDate = (date: string) => { try { const d = new Date(date); return isNaN(d.getTime()) ? new Date() : d; } catch { return new Date(); } };
-const DAYS_UNTIL = (date: string) => { try { return Math.ceil((safeDate(date).getTime() - Date.now()) / (1000*60*60*24)); } catch { return 0; } };
+// ═══════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════
 
-const PRE_DEPARTURE_TASKS = (nights: number): Omit<PreDepartureTask,"completed">[] => [
-  { task:"Check passport expiry dates",       deadline:"60-days", category:"document" },
-  { task:"Book flights & accommodation",       deadline:"90-days", category:"booking" },
-  { task:"Arrange travel insurance",           deadline:"30-days", category:"document" },
-  { task:"Check visa requirements",            deadline:"60-days", category:"document" },
-  { task:"Notify bank of travel",              deadline:"7-days",  category:"notification" },
-  { task:"Arrange pet / house care",           deadline:"14-days", category:"home" },
-  { task:"Download offline maps",              deadline:"3-days",  category:"packing" },
-  { task:"Pack snacks for journey",            deadline:"1-day",   category:"packing" },
-  { task:"Charge all devices",                 deadline:"1-day",   category:"packing" },
-  { task:"Online check-in",                    deadline:"1-day",   category:"booking" },
-];
+const safeDate = (d: string) => { try { const dt = new Date(d); return isNaN(dt.getTime()) ? new Date() : dt; } catch { return new Date(); } };
+const daysUntil = (d: string) => Math.ceil((safeDate(d).getTime() - Date.now()) / 86400000);
 
-function resolveDeadline(departure: string, deadline: string): string {
-  const dep = new Date(departure);
-  const days = parseInt(deadline);
-  dep.setDate(dep.getDate() - days);
-  return dep.toISOString().split("T")[0];
+function computeTripState(trip: Trip): TripState {
+  const du = daysUntil(trip.departureDate);
+  if (trip.state === "completed" || trip.state === "recovery") return trip.state;
+  if (du < 0) {
+    const returnDu = trip.returnDate ? daysUntil(trip.returnDate) : -1;
+    if (returnDu > 0) return "in_trip";
+    if (returnDu > -3) return "returning";
+    return trip.state === "recovery" ? "recovery" : "completed";
+  }
+  if (du === 0) return "travel_day";
+  if (du <= 7) return "countdown";
+  if (du <= 30) return "preparing";
+  if (trip.state === "evaluating") return "evaluating";
+  return "booking";
+}
+
+function computeReadiness(trip: Trip): ReadinessScore {
+  const docs = trip.documents.length > 0
+    ? Math.round((trip.documents.filter(d => d.status === "ready").length / trip.documents.length) * 100) : 0;
+  const budget = trip.budget.total > 0 ? 100 : 0;
+  const packing = trip.packingList.length > 0
+    ? Math.round((trip.packingList.flatMap(s => s.items).filter(i => i.checked).length / Math.max(1, trip.packingList.flatMap(s => s.items).length)) * 100) : 0;
+  const booking = trip.documents.find(d => d.type === "booking")?.status === "ready" ? 100 : 0;
+  const tasks = trip.preDeparture.length > 0
+    ? Math.round((trip.preDeparture.filter(t => t.completed).length / trip.preDeparture.length) * 100) : 0;
+  const overall = Math.round((docs + budget + packing + booking + tasks) / 5);
+  return { overall, documents: docs, budget, packing, booking, tasks };
 }
 
 function estimateBudgetBreakdown(total: number): BudgetBreakdown {
   return {
-    flights:       Math.round(total * 0.25),
+    flights: Math.round(total * 0.35),
     accommodation: Math.round(total * 0.30),
-    food:          Math.round(total * 0.20),
-    activities:    Math.round(total * 0.15),
-    transport:     Math.round(total * 0.05),
-    contingency:   Math.round(total * 0.05),
+    food: Math.round(total * 0.15),
+    activities: Math.round(total * 0.10),
+    transport: Math.round(total * 0.05),
+    contingency: Math.round(total * 0.05),
   };
 }
 
+const STATE_CONFIG: Record<TripState, { label: string; color: string; emoji: string; description: string }> = {
+  dreaming:   { label: "Dreaming",    color: T.lav,   emoji: "✦",  description: "Explore the idea" },
+  evaluating: { label: "Evaluating",  color: T.sky,   emoji: "◎",  description: "Checking affordability" },
+  booking:    { label: "Booking",     color: T.teal,  emoji: "◈",  description: "Securing reservations" },
+  preparing:  { label: "Preparing",   color: T.gold,  emoji: "◆",  description: "Getting ready" },
+  countdown:  { label: "Countdown",   color: T.sage,  emoji: "✓",  description: "Almost there" },
+  travel_day: { label: "Travel Day",  color: "#dc2626", emoji: "✈", description: "Today's the day" },
+  in_trip:    { label: "In Trip",     color: T.teal,  emoji: "☀",  description: "Enjoy every moment" },
+  returning:  { label: "Returning",   color: T.gold,  emoji: "→",  description: "Heading home" },
+  recovery:   { label: "Recovery",    color: T.sage,  emoji: "◦",  description: "Settling back in" },
+  completed:  { label: "Completed",   color: T.taupe, emoji: "✦",  description: "A trip to remember" },
+};
 
-// ── Expandable Day Card ───────────────────────────────────────────
-function ExpandableDay({ day, currency }: { day: any; currency: string }) {
-  const [open, setOpen] = React.useState(false);
-  return (
-    <div style={{ marginBottom: 8 }}>
-      <div onClick={() => setOpen(!open)} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 16px", background:T.ivory, borderRadius: open ? "16px 16px 0 0" : 16, border:`1.5px solid ${open ? T.gold : T.linen}`, cursor:"pointer" }}>
-        <div>
-          <p style={{ fontFamily:F.sans, fontSize:11, fontWeight:700, letterSpacing:"0.12em", textTransform:"uppercase", color:T.gold, margin:0 }}>DAY {day.day} · {day.theme}</p>
-          <p style={{ fontFamily:F.sans, fontSize:11, color:T.taupe, margin:"2px 0 0" }}>{safeDate(day.date).toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})}</p>
-        </div>
-        <span style={{ color:T.taupe, fontSize:16 }}>{open ? "▲" : "▼"}</span>
-      </div>
-      {open && (
-        <div style={{ background:"#fff", border:`1.5px solid ${T.gold}`, borderTop:"none", borderRadius:"0 0 16px 16px", padding:"14px 16px" }}>
-          {day.morning && (
-            <div style={{ display:"flex", gap:12, padding:"8px 0", borderBottom:`1px solid ${T.linen}` }}>
-              <span style={{ fontFamily:F.sans, fontSize:10, fontWeight:700, color:T.sky, width:72, flexShrink:0, paddingTop:2 }}>MORNING</span>
-              <p style={{ fontFamily:F.sans, fontSize:13, color:T.esp, margin:0, lineHeight:1.5 }}>{day.morning}</p>
-            </div>
-          )}
-          {day.afternoon && (
-            <div style={{ display:"flex", gap:12, padding:"8px 0", borderBottom:`1px solid ${T.linen}` }}>
-              <span style={{ fontFamily:F.sans, fontSize:10, fontWeight:700, color:T.gold, width:72, flexShrink:0, paddingTop:2 }}>AFTERNOON</span>
-              <p style={{ fontFamily:F.sans, fontSize:13, color:T.esp, margin:0, lineHeight:1.5 }}>{day.afternoon}</p>
-            </div>
-          )}
-          {day.evening && (
-            <div style={{ display:"flex", gap:12, padding:"8px 0", borderBottom:`1px solid ${T.linen}` }}>
-              <span style={{ fontFamily:F.sans, fontSize:10, fontWeight:700, color:T.esp, width:72, flexShrink:0, paddingTop:2 }}>EVENING</span>
-              <p style={{ fontFamily:F.sans, fontSize:13, color:T.esp, margin:0, lineHeight:1.5 }}>{day.evening}</p>
-            </div>
-          )}
-          {day.mumMoment && (
-            <div style={{ background:`${T.gold}10`, borderRadius:10, padding:"10px 12px", marginTop:8 }}>
-              <p style={{ fontFamily:F.serif, fontSize:13, fontStyle:"italic", color:T.gold, margin:0 }}>✦ Mum Moment: {day.mumMoment}</p>
-            </div>
-          )}
-          {day.tip && (
-            <p style={{ fontFamily:F.sans, fontSize:12, color:T.taupe, margin:"8px 0 0", fontStyle:"italic" }}>💡 {day.tip}</p>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-
-// ── Country list ──────────────────────────────────────────────────
-const COUNTRIES = [
-  "Afghanistan","Albania","Algeria","Andorra","Angola","Argentina","Armenia","Australia","Austria","Azerbaijan",
-  "Bahamas","Bahrain","Bangladesh","Barbados","Belarus","Belgium","Belize","Benin","Bhutan","Bolivia",
-  "Bosnia and Herzegovina","Botswana","Brazil","Brunei","Bulgaria","Burkina Faso","Burundi","Cambodia","Cameroon","Canada",
-  "Cape Verde","Central African Republic","Chad","Chile","China","Colombia","Comoros","Congo","Costa Rica","Croatia",
-  "Cuba","Cyprus","Czech Republic","Denmark","Djibouti","Dominican Republic","Ecuador","Egypt","El Salvador","Estonia",
-  "Ethiopia","Fiji","Finland","France","Gabon","Gambia","Georgia","Germany","Ghana","Greece",
-  "Guatemala","Guinea","Haiti","Honduras","Hungary","Iceland","India","Indonesia","Iran","Iraq",
-  "Ireland","Israel","Italy","Jamaica","Japan","Jordan","Kazakhstan","Kenya","Kosovo","Kuwait",
-  "Kyrgyzstan","Laos","Latvia","Lebanon","Libya","Lithuania","Luxembourg","Madagascar","Malawi","Malaysia",
-  "Maldives","Mali","Malta","Mauritius","Mexico","Moldova","Monaco","Mongolia","Montenegro","Morocco",
-  "Mozambique","Myanmar","Namibia","Nepal","Netherlands","New Zealand","Nicaragua","Niger","Nigeria","North Korea",
-  "North Macedonia","Norway","Oman","Pakistan","Palestine","Panama","Papua New Guinea","Paraguay","Peru","Philippines",
-  "Poland","Portugal","Qatar","Romania","Russia","Rwanda","Saudi Arabia","Senegal","Serbia","Sierra Leone",
-  "Singapore","Slovakia","Slovenia","Somalia","South Africa","South Korea","South Sudan","Spain","Sri Lanka","Sudan",
-  "Sweden","Switzerland","Syria","Taiwan","Tajikistan","Tanzania","Thailand","Togo","Trinidad and Tobago","Tunisia",
-  "Turkey","Turkmenistan","Uganda","Ukraine","United Arab Emirates","United Kingdom","United States","Uruguay","Uzbekistan",
-  "Venezuela","Vietnam","Yemen","Zambia","Zimbabwe",
-  // Cities
-  "New York","Los Angeles","London","Paris","Tokyo","Dubai","Singapore","Barcelona","Rome","Amsterdam",
-  "Prague","Vienna","Budapest","Lisbon","Athens","Istanbul","Bangkok","Bali","Maldives","Santorini",
-  "Mallorca","Ibiza","Mykonos","Amalfi Coast","Tuscany","Provence","Marrakech","Cape Town","Nairobi","Zanzibar",
+const PRE_DEPARTURE_TASKS: Omit<PreDepartureTask, "completed">[] = [
+  { task: "Check passport expiry dates",    deadline: "60 days before", category: "document" },
+  { task: "Book flights & accommodation",   deadline: "90 days before", category: "booking" },
+  { task: "Arrange travel insurance",       deadline: "30 days before", category: "document" },
+  { task: "Check visa requirements",        deadline: "60 days before", category: "document" },
+  { task: "Notify bank of travel dates",    deadline: "7 days before",  category: "notification" },
+  { task: "Arrange pet / house care",       deadline: "14 days before", category: "home" },
+  { task: "Complete online check-in",       deadline: "1 day before",   category: "booking" },
+  { task: "Download offline maps",          deadline: "3 days before",  category: "packing" },
+  { task: "Charge all devices",             deadline: "1 day before",   category: "packing" },
+  { task: "Pack medications & first aid",   deadline: "2 days before",  category: "health" },
 ];
 
-function CountryInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
-  const [suggestions, setSuggestions] = React.useState<string[]>([]);
-  const [focused, setFocused] = React.useState(false);
-
-  const handleChange = (v: string) => {
-    onChange(v);
-    if (v.length >= 2) {
-      const matches = COUNTRIES.filter(c => c.toLowerCase().startsWith(v.toLowerCase())).slice(0, 5);
-      setSuggestions(matches);
-    } else {
-      setSuggestions([]);
-    }
+function normTrip(t: any): Trip {
+  return {
+    ...t,
+    travellers:   Array.isArray(t.travellers)   ? t.travellers   : [],
+    itinerary:    Array.isArray(t.itinerary)    ? t.itinerary    : [],
+    packingList:  Array.isArray(t.packingList)  ? t.packingList  : [],
+    preDeparture: Array.isArray(t.preDeparture) ? t.preDeparture : [],
+    documents:    Array.isArray(t.documents)    ? t.documents    : [],
+    state: t.state || computeTripState(t),
   };
+}
 
-  const select = (country: string) => {
-    onChange(country);
-    setSuggestions([]);
-  };
+// ═══════════════════════════════════════════════════════════════════
+// READINESS RING COMPONENT
+// ═══════════════════════════════════════════════════════════════════
 
+function ReadinessRing({ score, size = 80 }: { score: number; size?: number }) {
+  const r = (size / 2) - 8;
+  const circ = 2 * Math.PI * r;
+  const color = score >= 80 ? T.sage : score >= 50 ? T.gold : T.blush;
   return (
-    <div style={{ position:"relative" }}>
-      <input
-        value={value}
-        onChange={e => handleChange(e.target.value)}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setTimeout(() => setFocused(false), 150)}
-        placeholder={placeholder || "Destination or country"}
-        style={{ width:"100%", background:"#FCFAF5", border:`1.5px solid ${focused?"#C9A961":"#E8DFD0"}`, borderRadius:12, padding:"12px 14px", fontFamily:"'DM Sans', sans-serif", fontSize:16, color:"#2A1F18", outline:"none", boxSizing:"border-box" as const, marginBottom: suggestions.length > 0 ? 0 : 8 }}
-      />
-      {suggestions.length > 0 && focused && (
-        <div style={{ position:"absolute", top:"100%", left:0, right:0, background:"#fff", border:"1.5px solid #E8DFD0", borderTop:"none", borderRadius:"0 0 12px 12px", zIndex:100, overflow:"hidden" }}>
-          {suggestions.map(s => (
-            <div key={s} onClick={() => select(s)} style={{ padding:"10px 14px", fontFamily:"'DM Sans', sans-serif", fontSize:14, color:"#2A1F18", cursor:"pointer", borderBottom:"1px solid #E8DFD0" }}
-              onMouseEnter={e => (e.currentTarget.style.background="#F0E8D8")}
-              onMouseLeave={e => (e.currentTarget.style.background="transparent")}
-            >
-              {s}
-            </div>
-          ))}
-        </div>
-      )}
+    <div style={{ position: "relative", width: size, height: size, flexShrink: 0 }}>
+      <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={T.linen} strokeWidth={6} />
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={6}
+          strokeDasharray={circ} strokeDashoffset={circ * (1 - score / 100)}
+          strokeLinecap="round" style={{ transition: "stroke-dashoffset 0.6s ease" }} />
+      </svg>
+      <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+        <span style={{ fontFamily: F.serif, fontSize: size * 0.22, fontWeight: 700, color, lineHeight: 1 }}>{score}%</span>
+        <span style={{ fontFamily: F.sans, fontSize: size * 0.10, color: T.taupe, textTransform: "uppercase", letterSpacing: "0.06em" }}>Ready</span>
+      </div>
     </div>
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// MAIN COMPONENT
+// ═══════════════════════════════════════════════════════════════════
+
 export function TripsScreen() {
-  const { user, profile } = useStore();
-  const [trips, setTrips]       = useState<Trip[]>([]);
-  const [activeTrip, setActiveTrip] = useState<Trip|null>(null);
-  const [detailTab, setDetailTab]   = useState("overview");
-  const [showAdd, setShowAdd]   = useState(false);
+  const { user, profile, familyMembers, householdSnapshot, setHouseholdSnapshot } = useStore();
+  const [trips, setTrips] = useState<Trip[]>([]);
+  const [activeTrip, setActiveTrip] = useState<Trip | null>(null);
+  const [detailTab, setDetailTab] = useState<"overview" | "itinerary" | "packing" | "checklist" | "budget" | "ask">("overview");
+  const [showAdd, setShowAdd] = useState(false);
   const [planning, setPlanning] = useState(false);
   const [packingLoading, setPackingLoading] = useState(false);
+  const [cfoLoading, setCfoLoading] = useState(false);
+  const [cfoResult, setCfoResult] = useState<any>(null);
 
-  // Add trip form
-  const [dest, setDest]         = useState("");
-  const [depDate, setDepDate]   = useState("");
-  const [retDate, setRetDate]   = useState("");
-  const [budget, setBudget]     = useState("");
+  // ── Add trip form state ──────────────────────────────────────────
+  const [dest, setDest] = useState("");
+  const [depDate, setDepDate] = useState("");
+  const [retDate, setRetDate] = useState("");
+  const [budget, setBudget] = useState("");
   const [currency, setCurrency] = useState("USD");
-  const [travellers, setTravellers] = useState<Traveller[]>([{ name: (profile as any)?.name || "Me", age: 35, type: "adult" }]);
+  const [travellers, setTravellers] = useState<Traveller[]>([]);
 
+  // ── Load data ────────────────────────────────────────────────────
   useEffect(() => {
     if (!user?.uid) return;
-    loadData(user.uid, "trips").then(d => { if(d?.trips) setTrips((d.trips as Trip[]).map(normTrip)); });
+    loadData(user.uid, "trips").then(d => {
+      if (d?.trips) setTrips((d.trips as Trip[]).map(normTrip));
+    });
   }, [user?.uid]);
+
+  // ── Pre-populate travellers from profile ─────────────────────────
+  useEffect(() => {
+    if (!showAdd) return;
+    const defaultTravellers: Traveller[] = [];
+
+    // Add self
+    defaultTravellers.push({
+      id: "self",
+      name: (profile as any)?.name || "Me",
+      age: 35,
+      type: "adult",
+      role: "other",
+      fromProfile: true,
+    });
+
+    // Add partner from family members
+    const partner = familyMembers.find((m: any) => m.role === "partner" || m.role === "spouse");
+    if (partner) {
+      defaultTravellers.push({
+        id: partner.id || "partner",
+        name: partner.name,
+        age: partner.age || 35,
+        type: "adult",
+        role: "partner",
+        fromProfile: true,
+      });
+    }
+
+    // Add kids from profile
+    const kids = (profile as any)?.kids || [];
+    kids.forEach((k: any, i: number) => {
+      defaultTravellers.push({
+        id: `kid_${i}`,
+        name: k.name,
+        age: k.age || 8,
+        type: k.age < 2 ? "infant" : "child",
+        role: "kid",
+        fromProfile: true,
+      });
+    });
+
+    // Also check familyMembers for children
+    familyMembers.filter((m: any) => m.role === "child").forEach((m: any) => {
+      if (!defaultTravellers.find(t => t.name === m.name)) {
+        defaultTravellers.push({
+          id: m.id || m.name,
+          name: m.name,
+          age: m.age || 8,
+          type: m.age < 2 ? "infant" : "child",
+          role: "kid",
+          fromProfile: true,
+        });
+      }
+    });
+
+    setTravellers(defaultTravellers);
+  }, [showAdd, profile, familyMembers]);
 
   const persist = async (updated: Trip[]) => {
     setTrips(updated);
     if (user?.uid) await saveData(user.uid, "trips", { trips: updated });
   };
 
-  // ── Add traveller ─────────────────────────────────────────────────
-  const addTraveller = () => setTravellers(p => [...p, { name: "", age: 5, type: "child" }]);
-  const updateTraveller = (i: number, field: keyof Traveller, val: any) =>
-    setTravellers(p => p.map((t, ti) => ti===i ? { ...t, [field]: val } : t));
-
-  // ── Create trip per blueprint ─────────────────────────────────────
+  // ── Create trip ──────────────────────────────────────────────────
   const addTrip = async () => {
     if (!dest || !depDate) return;
     const dep = new Date(depDate);
     const ret = retDate ? new Date(retDate) : null;
-    const nights = ret ? Math.ceil((ret.getTime()-dep.getTime())/(1000*60*60*24)) : 7;
+    const nights = ret ? Math.ceil((ret.getTime() - dep.getTime()) / 86400000) : 7;
     const totalBudget = parseFloat(budget) || 0;
-    const preDep = PRE_DEPARTURE_TASKS(nights).map(t => ({
-      ...t,
-      deadline: resolveDeadline(depDate, t.deadline.replace("-days","").replace("-day","")),
-      completed: false,
-    }));
-    const docs: Document[] = [
-      ...travellers.map(() => ({ type:"passport" as const, status:"needed" as const })),
-      { type:"insurance", status:"needed" },
-      { type:"booking", status:"needed" },
+
+    const docs: TripDocument[] = [
+      ...travellers.filter(t => t.type !== "infant").map(t => ({
+        type: "passport" as const, status: "needed" as const, traveller: t.name,
+      })),
+      { type: "insurance", status: "needed" },
+      { type: "booking", status: "needed" },
     ];
 
     const trip: Trip = {
       id: crypto.randomUUID(),
-      destination: dest, country: dest.split(",").pop()?.trim() || dest,
-      departureDate: depDate, returnDate: retDate || undefined, nights,
-      travellers,
-      budget: { total: totalBudget, currency, breakdown: estimateBudgetBreakdown(totalBudget) },
-      status: "planning",
-      itinerary: [], packingList: [], preDeparture: preDep, documents: docs,
+      destination: dest,
+      country: dest.split(",").pop()?.trim() || dest,
+      departureDate: depDate,
+      returnDate: retDate || undefined,
+      nights,
+      state: daysUntil(depDate) > 30 ? "booking" : "preparing",
+      travellers: travellers.filter(t => t.name.trim()),
+      budget: { total: totalBudget, currency, breakdown: estimateBudgetBreakdown(totalBudget), spent: 0 },
+      itinerary: [],
+      packingList: [],
+      preDeparture: PRE_DEPARTURE_TASKS.map(t => ({ ...t, completed: false })),
+      documents: docs,
       createdAt: Date.now(),
     };
 
@@ -248,276 +344,540 @@ export function TripsScreen() {
     await persist(updated);
     setActiveTrip(normTrip(trip));
     setDest(""); setDepDate(""); setRetDate(""); setBudget(""); setShowAdd(false);
+    setDetailTab("overview");
 
-    // Link to budget per blueprint
     if (user?.uid) {
       await bus.publish("trips.trip.created", trip, { userId: user.uid, source: "trips" });
-      if (totalBudget > 0) toast(`Trip added! Go to Budget → Goals to save for ${dest} 💛`, { duration: 4000 });
+      if (totalBudget > 0) toast(`Trip to ${dest} added! ✦`, { duration: 3000 });
     }
   };
 
-  // ── Generate itinerary per blueprint (with mum moment) ────────────
+  // ── Generate itinerary (up to 7 days) ────────────────────────────
   const generateItinerary = async (trip: Trip) => {
     setPlanning(true);
-    const kids = trip.travellers.filter(t=>t.type==="child");
-    const adults = trip.travellers.filter(t=>t.type==="adult");
+    const kids = trip.travellers.filter(t => t.type === "child");
+    const adults = trip.travellers.filter(t => t.type === "adult");
+    const days = Math.min(trip.nights, 7);
 
-    const sys = `You are Nora, a travel planner. Return ONLY valid JSON with NO extra text:
-{"days":[{"day":1,"date":"YYYY-MM-DD","theme":"string","morning":"activity idea","afternoon":"activity idea","evening":"dinner spot","tip":"one local tip","mumMoment":"something special for her"}]}
-Keep each field under 8 words. Generate exactly ${Math.min(trip.nights,3)} days.`;
+    const sys = `You are Nora, a family travel planner. Return ONLY valid JSON:
+{"days":[{"day":1,"date":"YYYY-MM-DD","theme":"string","morning":"activity","afternoon":"activity","evening":"dinner spot","tip":"local tip","mumMoment":"something special just for her — rest, beauty, joy"}]}
+Generate exactly ${days} days. Keep each field under 12 words. Make it feel achievable not exhausting.`;
 
-    const prompt = `${trip.nights} nights in ${trip.destination}. Party: ${(trip.travellers||[]).map(t=>`${t.name} (${t.age}y ${t.type})`).join(", ")}. Budget: ${trip.budget?.currency??'USD'}${trip.budget.total}.`;
-    console.log("[Trips] calling AI for:", trip.destination);
+    const prompt = `${days} nights in ${trip.destination}.
+Party: ${adults.map(a => a.name).join(", ")} (adults)${kids.length ? `, ${kids.map(k => `${k.name} age ${k.age}`).join(", ")} (kids)` : ""}.
+Budget: ${trip.budget.currency}${trip.budget.total}.
+Make it family-friendly but include a mum moment each day.`;
+
     const result = await ai(sys, prompt, "trip_planner");
-    console.log("[Trips] result:", result.error || result.text?.slice(0,100));
-
     if (!result.error) {
       try {
-        const s=result.text.indexOf("{"); const e=result.text.lastIndexOf("}"); if(s===-1||e===-1) throw new Error("No JSON"); const parsed = JSON.parse(result.text.slice(s,e+1));
-        const updated = trips.map(t => t.id===trip.id ? { ...t, itinerary:parsed.days } : t);
+        const clean = result.text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+        const s = clean.indexOf("{"); const e = clean.lastIndexOf("}");
+        if (s === -1 || e === -1) throw new Error("No JSON");
+        const parsed = JSON.parse(clean.slice(s, e + 1));
+        const updated = trips.map(t => t.id === trip.id ? { ...t, itinerary: parsed.days } : t);
         await persist(updated);
-        setActiveTrip(normTrip({ ...trip, itinerary:parsed.days }));
-        trackEvent("itinerary_generated", { destination: trip.destination });
-        toast.success("Itinerary ready ✦");
-      } catch(e) { console.error("[Trips] parse error:", e); toast.error("Couldn't generate itinerary — tap Redo to try again"); }
+        setActiveTrip(normTrip({ ...trip, itinerary: parsed.days }));
+        toast.success(`${days}-day itinerary ready ✦`);
+      } catch { toast.error("Itinerary generation failed — try again"); }
     }
     setPlanning(false);
   };
 
-  // ── Generate packing list per blueprint (Mum/Kids/Everyone/Documents/Tech) ──
+  // ── Generate packing list ────────────────────────────────────────
   const generatePackingList = async (trip: Trip) => {
     setPackingLoading(true);
-    const kids = trip.travellers.filter(t=>t.type==="child");
+    const kids = trip.travellers.filter(t => t.type === "child");
+    const hasKids = kids.length > 0;
 
-    const sys = `You are Nora. Generate a smart packing list. Return ONLY valid JSON:
-{"sections":[
-  {"name":"Mum","items":[{"name":"string","quantity":1,"essential":true,"weatherDependent":false}]},
-  {"name":"Kids","items":[{"name":"string","quantity":1,"essential":true,"weatherDependent":false}]},
-  {"name":"Everyone","items":[{"name":"string","quantity":1,"essential":true,"weatherDependent":false}]},
-  {"name":"Documents","items":[{"name":"string","quantity":1,"essential":true,"weatherDependent":false}]},
-  {"name":"Tech","items":[{"name":"string","quantity":1,"essential":false,"weatherDependent":false}]}
-]}
-${kids.length===0?"Skip Kids section.":""}
-Personalise quantities to ${trip.nights} nights. Include weather-appropriate items.`;
+    const sys = `You are Nora. Generate a smart family packing list. Return ONLY valid JSON:
+{"sections":[{"name":"Mum","items":[{"name":"Underwear","quantity":7,"essential":true,"weatherDependent":false}]},{"name":"${hasKids ? "Kids" : "Partner"}","items":[]},{"name":"Everyone","items":[]},{"name":"Documents","items":[]},{"name":"Tech","items":[]}]}
+Each item: name, quantity (number), essential (bool), weatherDependent (bool). Max 12 items per section.`;
 
-    const prompt = `${trip.nights} nights in ${trip.destination}. Travellers: ${(trip.travellers||[]).map(t=>`${t.name} (${t.age}y)`).join(", ")}.`;
-    console.log("[Trips] calling AI for:", trip.destination);
+    const prompt = `Trip to ${trip.destination}, ${trip.nights} nights.
+${hasKids ? `Kids: ${kids.map(k => `${k.name} age ${k.age}`).join(", ")}.` : "Adults only."}
+Weather: pack for typical ${trip.destination} conditions.`;
+
     const result = await ai(sys, prompt, "trip_planner");
-    console.log("[Trips] result:", result.error || result.text?.slice(0,100));
-
     if (!result.error) {
       try {
-        const cleanText = result.text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
-        const s=cleanText.indexOf("{"); const e=cleanText.lastIndexOf("}"); if(s===-1||e===-1) throw new Error("No JSON"); const parsed = JSON.parse(cleanText.slice(s,e+1));
+        const clean = result.text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+        const s = clean.indexOf("{"); const e = clean.lastIndexOf("}");
+        if (s === -1 || e === -1) throw new Error("No JSON");
+        const parsed = JSON.parse(clean.slice(s, e + 1));
         const sections: PackingSection[] = parsed.sections
-          .filter((s:any) => s.items?.length > 0)
-          .map((s:any) => ({
+          .filter((s: any) => s.items?.length > 0)
+          .map((s: any) => ({
             name: s.name,
-            items: s.items.map((i:any) => ({ ...i, checked:false, custom:false }))
+            items: s.items.map((i: any) => ({ ...i, checked: false, custom: false })),
           }));
-        const updated = trips.map(t => t.id===trip.id ? { ...t, packingList:sections } : t);
+        console.log("[Trips] packing sections:", sections.length, sections.map(s => s.name));
+        const updated = trips.map(t => t.id === trip.id ? { ...t, packingList: sections } : t);
         await persist(updated);
-        console.log('[Trips] packing sections:', sections.length, sections.map(s=>s.name));
-        setActiveTrip(normTrip({ ...trip, packingList:sections }));
-        toast.success(`${(sections||[]).reduce((a,s)=>a+(s.items||[]).length,0)} items packed ✦`);
-      } catch { toast.error("Couldn't generate packing list"); }
+        setActiveTrip(normTrip({ ...trip, packingList: sections }));
+        toast.success(`${sections.flatMap(s => s.items).length} items packed ✦`);
+      } catch { toast.error("Packing list failed — try again"); }
     }
     setPackingLoading(false);
   };
 
-  // ── Toggle packing item ───────────────────────────────────────────
-  const togglePacking = async (secIdx: number, itemIdx: number) => {
+  // ── Toggle packing item ──────────────────────────────────────────
+  const togglePacking = async (si: number, ii: number) => {
     if (!activeTrip) return;
-    const updated_sections = activeTrip.packingList.map((s,si) =>
-      si===secIdx ? { ...s, items:s.items.map((item,ii) => ii===itemIdx ? { ...item, checked:!item.checked } : item) } : s
+    const updated_sections = activeTrip.packingList.map((s, sIdx) =>
+      sIdx !== si ? s : { ...s, items: s.items.map((item, iIdx) => iIdx !== ii ? item : { ...item, checked: !item.checked }) }
     );
-    const updated = { ...activeTrip, packingList:updated_sections };
-    setActiveTrip(updated);
-    const allTrips = trips.map(t => t.id===activeTrip.id ? updated : t);
-    await persist(allTrips);
+    const updated = { ...activeTrip, packingList: updated_sections };
+    const all = trips.map(t => t.id === updated.id ? updated : t);
+    await persist(all);
+    setActiveTrip(normTrip(updated));
   };
 
-  // ── Toggle pre-departure task ─────────────────────────────────────
-  const togglePreDep = async (idx: number) => {
+  // ── Toggle pre-departure task ────────────────────────────────────
+  const toggleTask = async (i: number) => {
     if (!activeTrip) return;
-    const updated = { ...activeTrip, preDeparture: activeTrip.preDeparture.map((t,i) => i===idx ? { ...t, completed:!t.completed } : t) };
-    setActiveTrip(updated);
-    await persist(trips.map(t => t.id===activeTrip.id ? updated : t));
+    const tasks = activeTrip.preDeparture.map((t, ti) => ti !== i ? t : { ...t, completed: !t.completed });
+    const updated = { ...activeTrip, preDeparture: tasks };
+    const all = trips.map(t => t.id === updated.id ? updated : t);
+    await persist(all);
+    setActiveTrip(normTrip(updated));
   };
 
-  // ── Toggle document status ────────────────────────────────────────
-  const toggleDoc = async (idx: number) => {
+  // ── Toggle document ──────────────────────────────────────────────
+  const toggleDoc = async (i: number) => {
     if (!activeTrip) return;
-    const statuses: Document["status"][] = ["needed","ready","expired"];
-    const doc = activeTrip.documents[idx];
-    const nextStatus = statuses[(statuses.indexOf(doc.status)+1) % statuses.length];
-    const updated = { ...activeTrip, documents: activeTrip.documents.map((d,i) => i===idx ? { ...d, status:nextStatus } : d) };
-    setActiveTrip(updated);
-    await persist(trips.map(t => t.id===activeTrip.id ? updated : t));
+    const cycle: TripDocument["status"][] = ["needed", "ready", "expired"];
+    const docs = activeTrip.documents.map((d, di) =>
+      di !== i ? d : { ...d, status: cycle[(cycle.indexOf(d.status) + 1) % 3] }
+    );
+    const updated = { ...activeTrip, documents: docs };
+    const all = trips.map(t => t.id === updated.id ? updated : t);
+    await persist(all);
+    setActiveTrip(normTrip(updated));
   };
 
-  // ── Detail view ───────────────────────────────────────────────────
-  const normTrip = (t: any): Trip => ({
-    ...t,
-    // Handle old field names
-    destination: t.destination || t.dest || "Unknown destination",
-    nights:      t.nights || 0,
-    status:      t.status || "planning",
-    travellers:   Array.isArray(t.travellers)   ? t.travellers   : [],
-    itinerary:    Array.isArray(t.itinerary)    ? t.itinerary    : [],
-    packingList:  Array.isArray(t.packingList)  ? t.packingList  : [],
-    preDeparture: Array.isArray(t.preDeparture) ? t.preDeparture : [],
-    documents:    Array.isArray(t.documents)    ? t.documents    : [],
-    budget: {
-      total:     typeof t.budget?.total    === "number" ? t.budget.total    : 0,
-      currency:  typeof t.budget?.currency === "string" ? t.budget.currency : "GBP",
-      breakdown: t.budget?.breakdown ?? { flights:0, accommodation:0, food:0, activities:0, transport:0, contingency:0 },
-    },
-  });
+  // ── Ask CFO about trip ───────────────────────────────────────────
+  const askCFO = async (question: string) => {
+    if (!user?.uid) return;
+    setCfoLoading(true);
+    try {
+      let snap = householdSnapshot;
+      if (!snap) {
+        snap = await buildHouseholdSnapshot(user.uid);
+        setHouseholdSnapshot(snap);
+      }
+      const { result } = await analyzeScenario(question, snap, user.uid, (profile as any)?.name);
+      setCfoResult(result);
+    } catch { toast.error("CFO analysis failed"); }
+    setCfoLoading(false);
+  };
 
-  if (activeTrip) {
-    const trip = trips.find(t=>t.id===activeTrip.id) || activeTrip;
-    const du = DAYS_UNTIL(trip.departureDate);
-    const totalItems = (trip.packingList||[]).reduce((a,s)=>a+(s?.items||[]).length,0);
-    const checkedItems = (trip.packingList||[]).reduce((a,s)=>a+(s?.items||[]).filter(i=>i?.checked).length,0);
-    const completedPreDep = (trip.preDeparture||[]).filter(t=>t?.completed).length;
-    const docsReady = (trip.documents||[]).filter(d=>d?.status==="ready").length;
+  // ═══════════════════════════════════════════════════════════════════
+  // RENDER: TRIP LIST
+  // ═══════════════════════════════════════════════════════════════════
 
-    const STATUS_COLORS: Record<string,string> = { needed:T.blush, ready:T.sage, expired:"#dc2626" };
-    const CAT_COLORS: Record<string,string> = { booking:T.gold, document:T.blush, health:T.sage, packing:T.sky, home:T.lav, notification:T.taupe };
+  if (!activeTrip) {
+    const upcoming = trips.filter(t => daysUntil(t.departureDate) >= -7 && t.state !== "completed");
+    const past = trips.filter(t => t.state === "completed" || daysUntil(t.departureDate) < -7);
 
     return (
-      <div style={{ animation:"fadeUp .45s ease both" }}>
-        <button onClick={()=>{ setActiveTrip(null); setDetailTab("overview"); }} style={{ background:"none", border:"none", fontFamily:F.sans, fontSize:13, color:T.taupe, cursor:"pointer", marginBottom:12, padding:"8px 0", minHeight:44, touchAction:"manipulation" }}>← All trips</button>
-
-        <HeroCard
-          eyebrow={du>0?`${du} DAYS AWAY`:"DEPARTING TODAY!"}
-          title={trip.destination}
-          subtitle={`${trip.nights} nights · ${safeDate(trip.departureDate).toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}`}
-          color={du<=7?"#dc2626":du<=30?T.gold:T.esp}
-        />
-
-        {/* Tabs */}
-        <div style={{ display:"flex", gap:6, marginBottom:16, overflowX:"auto", paddingBottom:4 }}>
-          {["overview","itinerary","packing","checklist","budget","edit"].map(t=>(
-            <Pill key={t} label={
-              t==="overview"?"Overview":
-              t==="itinerary"?"📅 Itinerary":
-              t==="packing"?`🧳 Packing${totalItems>0?` (${checkedItems}/${totalItems})`:""}`:
-              t==="checklist"?`✓ Pre-Dep${completedPreDep>0?` (${completedPreDep}/${trip.preDeparture.length})`:""}`:
-              "💰 Budget"
-            } active={detailTab===t} onClick={()=>setDetailTab(t)}/>
-          ))}
+      <div style={{ animation: "fadeUp .45s ease both" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <PageTitle>Trips</PageTitle>
+          <button onClick={() => setShowAdd(!showAdd)}
+            style={{ background: showAdd ? T.linen : T.esp, color: showAdd ? T.bark : "#fff", border: "none", borderRadius: 12, padding: "8px 16px", fontFamily: F.sans, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+            {showAdd ? "Cancel" : "+ Plan Trip"}
+          </button>
         </div>
 
-        {/* ── OVERVIEW ──────────────────────────────────────────────── */}
-        {detailTab==="overview" && <>
-          {/* Travellers per blueprint */}
+        {/* ── ADD TRIP FORM ────────────────────────────────────────── */}
+        {showAdd && (
           <Card>
-            <p style={{ fontFamily:F.sans, fontSize:11, fontWeight:700, letterSpacing:"0.12em", textTransform:"uppercase", color:T.taupe, margin:"0 0 12px" }}>TRAVELLERS</p>
-            {(trip.travellers||[]).map((t,i)=>(
-              <div key={i} style={{ display:"flex", alignItems:"center", gap:12, padding:"8px 0", borderBottom:`1px solid ${T.linen}` }}>
-                <span style={{ fontSize:20 }}>{t.type==="adult"?"👩":t.age<3?"👶":"🧒"}</span>
-                <div>
-                  <p style={{ fontFamily:F.sans, fontSize:13, fontWeight:600, color:T.esp, margin:0 }}>{t.name}</p>
-                  <p style={{ fontFamily:F.sans, fontSize:11, color:T.taupe, margin:0 }}>{t.age} years · {t.type}</p>
+            <p style={{ fontFamily: F.sans, fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: T.taupe, margin: "0 0 16px" }}>NEW TRIP</p>
+
+            <input value={dest} onChange={e => setDest(e.target.value)}
+              placeholder="Where to? (e.g. Lagos, Nigeria)"
+              style={{ width: "100%", background: T.sand, border: `1.5px solid ${T.linen}`, borderRadius: 12, padding: "12px 14px", fontFamily: F.sans, fontSize: 16, color: T.esp, outline: "none", marginBottom: 12, boxSizing: "border-box" }} />
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+              <div>
+                <p style={{ fontFamily: F.sans, fontSize: 10, fontWeight: 700, color: T.taupe, margin: "0 0 6px", textTransform: "uppercase", letterSpacing: "0.08em" }}>Departure</p>
+                <input type="date" value={depDate} onChange={e => setDepDate(e.target.value)}
+                  style={{ width: "100%", background: T.sand, border: `1.5px solid ${T.linen}`, borderRadius: 10, padding: "10px 12px", fontFamily: F.sans, fontSize: 14, color: T.esp, outline: "none", boxSizing: "border-box" }} />
+              </div>
+              <div>
+                <p style={{ fontFamily: F.sans, fontSize: 10, fontWeight: 700, color: T.taupe, margin: "0 0 6px", textTransform: "uppercase", letterSpacing: "0.08em" }}>Return</p>
+                <input type="date" value={retDate} onChange={e => setRetDate(e.target.value)}
+                  style={{ width: "100%", background: T.sand, border: `1.5px solid ${T.linen}`, borderRadius: 10, padding: "10px 12px", fontFamily: F.sans, fontSize: 14, color: T.esp, outline: "none", boxSizing: "border-box" }} />
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 10, marginBottom: 16 }}>
+              <div>
+                <p style={{ fontFamily: F.sans, fontSize: 10, fontWeight: 700, color: T.taupe, margin: "0 0 6px", textTransform: "uppercase", letterSpacing: "0.08em" }}>Currency</p>
+                <select value={currency} onChange={e => setCurrency(e.target.value)}
+                  style={{ width: "100%", background: T.sand, border: `1.5px solid ${T.linen}`, borderRadius: 10, padding: "10px 12px", fontFamily: F.sans, fontSize: 14, color: T.esp, outline: "none" }}>
+                  {["USD","GBP","EUR","NGN","CAD","AUD","ZAR"].map(c => <option key={c}>{c}</option>)}
+                </select>
+              </div>
+              <div>
+                <p style={{ fontFamily: F.sans, fontSize: 10, fontWeight: 700, color: T.taupe, margin: "0 0 6px", textTransform: "uppercase", letterSpacing: "0.08em" }}>Total Budget</p>
+                <input type="number" value={budget} onChange={e => setBudget(e.target.value)}
+                  placeholder="e.g. 5000"
+                  style={{ width: "100%", background: T.sand, border: `1.5px solid ${T.linen}`, borderRadius: 10, padding: "10px 12px", fontFamily: F.sans, fontSize: 14, color: T.esp, outline: "none", boxSizing: "border-box" }} />
+              </div>
+            </div>
+
+            {/* Travellers — pre-populated from profile */}
+            <p style={{ fontFamily: F.sans, fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: T.taupe, margin: "0 0 10px" }}>WHO'S COMING</p>
+            <div style={{ marginBottom: 12 }}>
+              {travellers.map((t, i) => (
+                <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.linen}` }}>
+                  <span style={{ fontSize: 18, flexShrink: 0 }}>{t.type === "adult" ? "👩" : t.age < 2 ? "👶" : "🧒"}</span>
+                  <input value={t.name} onChange={e => setTravellers(prev => prev.map((tt, ti) => ti === i ? { ...tt, name: e.target.value } : tt))}
+                    placeholder="Name"
+                    style={{ flex: 1, background: "none", border: "none", fontFamily: F.sans, fontSize: 13, color: T.esp, outline: "none", minWidth: 0 }} />
+                  <select value={t.type} onChange={e => setTravellers(prev => prev.map((tt, ti) => ti === i ? { ...tt, type: e.target.value as any } : tt))}
+                    style={{ background: T.sand, border: `1px solid ${T.linen}`, borderRadius: 8, padding: "4px 8px", fontFamily: F.sans, fontSize: 11, color: T.taupe }}>
+                    <option value="adult">Adult</option>
+                    <option value="child">Child</option>
+                    <option value="infant">Infant</option>
+                  </select>
+                  {!t.fromProfile && (
+                    <button onClick={() => setTravellers(prev => prev.filter((_, ti) => ti !== i))}
+                      style={{ background: "none", border: "none", color: T.taupe, cursor: "pointer", fontSize: 16, padding: 0 }}>×</button>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+              {[
+                { label: "+ Partner", role: "partner", type: "adult" as const },
+                { label: "+ Parent", role: "parent", type: "adult" as const },
+                { label: "+ Friend", role: "friend", type: "adult" as const },
+                { label: "+ Child", role: "kid", type: "child" as const },
+              ].map(btn => (
+                <button key={btn.label} onClick={() => setTravellers(prev => [...prev, {
+                  id: crypto.randomUUID(), name: "", age: btn.type === "child" ? 8 : 35,
+                  type: btn.type, role: btn.role as any, fromProfile: false,
+                }])}
+                  style={{ padding: "6px 12px", background: T.sand, border: `1px solid ${T.linen}`, borderRadius: 20, fontFamily: F.sans, fontSize: 11, color: T.bark, cursor: "pointer" }}>
+                  {btn.label}
+                </button>
+              ))}
+            </div>
+
+            <button onClick={addTrip} disabled={!dest || !depDate}
+              style={{ width: "100%", padding: "14px", background: dest && depDate ? T.esp : T.linen, color: "#fff", border: "none", borderRadius: 14, fontFamily: F.sans, fontSize: 14, fontWeight: 600, cursor: dest && depDate ? "pointer" : "not-allowed" }}>
+              Add Trip ✦
+            </button>
+          </Card>
+        )}
+
+        {/* ── UPCOMING TRIPS ───────────────────────────────────────── */}
+        {upcoming.length > 0 && (
+          <>
+            <p style={{ fontFamily: F.sans, fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: T.taupe, margin: "20px 0 10px" }}>UPCOMING</p>
+            {upcoming.map(trip => {
+              const du = daysUntil(trip.departureDate);
+              const state = computeTripState(trip);
+              const cfg = STATE_CONFIG[state];
+              const readiness = computeReadiness(trip);
+              return (
+                <div key={trip.id} onClick={() => { setActiveTrip(normTrip(trip)); setDetailTab("overview"); }}
+                  style={{ background: T.ivory, border: `1px solid ${T.linen}`, borderRadius: 20, padding: "16px", marginBottom: 12, cursor: "pointer" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                        <span style={{ fontFamily: F.sans, fontSize: 11, fontWeight: 700, color: cfg.color, background: `${cfg.color}15`, padding: "2px 10px", borderRadius: 20 }}>
+                          {cfg.emoji} {cfg.label}
+                        </span>
+                      </div>
+                      <p style={{ fontFamily: F.serif, fontSize: 22, fontStyle: "italic", color: T.esp, margin: "0 0 2px", fontWeight: 500 }}>{trip.destination}</p>
+                      <p style={{ fontFamily: F.sans, fontSize: 12, color: T.taupe, margin: 0 }}>
+                        {trip.nights} nights · {safeDate(trip.departureDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                      </p>
+                    </div>
+                    <ReadinessRing score={readiness.overall} size={64} />
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {trip.travellers.slice(0, 4).map((t, i) => (
+                      <span key={i} style={{ fontFamily: F.sans, fontSize: 11, color: T.taupe, background: T.sand, padding: "3px 8px", borderRadius: 20 }}>
+                        {t.type === "adult" ? "👩" : "🧒"} {t.name.split(" ")[0]}
+                      </span>
+                    ))}
+                    {trip.travellers.length > 4 && (
+                      <span style={{ fontFamily: F.sans, fontSize: 11, color: T.taupe }}>+{trip.travellers.length - 4}</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </>
+        )}
+
+        {/* ── PAST TRIPS ───────────────────────────────────────────── */}
+        {past.length > 0 && (
+          <>
+            <p style={{ fontFamily: F.sans, fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: T.taupe, margin: "20px 0 10px" }}>PAST</p>
+            {past.map(trip => (
+              <div key={trip.id} onClick={() => { setActiveTrip(normTrip(trip)); setDetailTab("overview"); }}
+                style={{ background: T.sand, border: `1px solid ${T.linen}`, borderRadius: 16, padding: "14px 16px", marginBottom: 8, cursor: "pointer", opacity: 0.85 }}>
+                <p style={{ fontFamily: F.serif, fontSize: 16, fontStyle: "italic", color: T.esp, margin: "0 0 2px" }}>{trip.destination}</p>
+                <p style={{ fontFamily: F.sans, fontSize: 11, color: T.taupe, margin: 0 }}>
+                  {trip.nights} nights · {safeDate(trip.departureDate).toLocaleDateString("en-US", { month: "short", year: "numeric" })}
+                </p>
+              </div>
+            ))}
+          </>
+        )}
+
+        {trips.length === 0 && !showAdd && (
+          <div style={{ textAlign: "center", padding: "40px 20px" }}>
+            <p style={{ fontSize: 48, marginBottom: 12 }}>✈</p>
+            <p style={{ fontFamily: F.serif, fontSize: 22, fontStyle: "italic", color: T.esp, margin: "0 0 8px" }}>Where next?</p>
+            <p style={{ fontFamily: F.sans, fontSize: 13, color: T.taupe, margin: "0 0 20px" }}>Plan a trip and Nora will help reduce the stress of every step.</p>
+            <button onClick={() => setShowAdd(true)}
+              style={{ background: T.esp, color: "#fff", border: "none", borderRadius: 14, padding: "12px 24px", fontFamily: F.sans, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+              Plan a trip ✦
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // RENDER: TRIP DETAIL
+  // ═══════════════════════════════════════════════════════════════════
+
+  const trip = activeTrip;
+  const du = daysUntil(trip.departureDate);
+  const state = computeTripState(trip);
+  const cfg = STATE_CONFIG[state];
+  const readiness = computeReadiness(trip);
+  const totalItems = trip.packingList.flatMap(s => s.items).length;
+  const checkedItems = trip.packingList.flatMap(s => s.items).filter(i => i.checked).length;
+  const completedTasks = trip.preDeparture.filter(t => t.completed).length;
+  const docsReady = trip.documents.filter(d => d.status === "ready").length;
+
+  const CATEGORY_ICONS: Record<string, string> = {
+    booking: "◈", document: "◎", health: "◦", packing: "🧳", home: "◉", notification: "◆",
+  };
+
+  return (
+    <div style={{ animation: "fadeUp .45s ease both" }}>
+      <button onClick={() => { setActiveTrip(null); setCfoResult(null); }}
+        style={{ background: "none", border: "none", fontFamily: F.sans, fontSize: 13, color: T.taupe, cursor: "pointer", marginBottom: 12, padding: "8px 0", minHeight: 44, touchAction: "manipulation" }}>
+        ← All trips
+      </button>
+
+      {/* ── HERO ─────────────────────────────────────────────────── */}
+      <div style={{ background: `linear-gradient(135deg, ${T.esp}, #3D2E22)`, borderRadius: 20, padding: "20px", marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div style={{ flex: 1 }}>
+            <span style={{ fontFamily: F.sans, fontSize: 11, fontWeight: 700, color: cfg.color, background: `${cfg.color}25`, padding: "3px 10px", borderRadius: 20 }}>
+              {cfg.emoji} {cfg.label}
+            </span>
+            <p style={{ fontFamily: F.serif, fontSize: 28, fontStyle: "italic", color: "#fff", margin: "8px 0 4px", fontWeight: 500 }}>{trip.destination}</p>
+            <p style={{ fontFamily: F.sans, fontSize: 12, color: "rgba(255,255,255,0.6)", margin: 0 }}>
+              {trip.nights} nights · {safeDate(trip.departureDate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
+            </p>
+            {du > 0 && (
+              <p style={{ fontFamily: F.sans, fontSize: 13, color: T.gold, margin: "6px 0 0", fontWeight: 600 }}>
+                {du === 1 ? "Tomorrow!" : `${du} days away`}
+              </p>
+            )}
+            {du === 0 && (
+              <p style={{ fontFamily: F.sans, fontSize: 14, color: "#dc2626", margin: "6px 0 0", fontWeight: 700 }}>✈ TRAVEL DAY</p>
+            )}
+          </div>
+          <ReadinessRing score={readiness.overall} size={80} />
+        </div>
+      </div>
+
+      {/* ── TABS ──────────────────────────────────────────────────── */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 16, overflowX: "auto", paddingBottom: 4, scrollbarWidth: "none" }}>
+        {(["overview", "itinerary", "packing", "checklist", "budget", "ask"] as const).map(t => (
+          <Pill key={t} active={detailTab === t} onClick={() => setDetailTab(t)}
+            label={
+              t === "overview" ? "Overview" :
+              t === "itinerary" ? "📅 Itinerary" :
+              t === "packing" ? `🧳 Pack${totalItems > 0 ? ` ${checkedItems}/${totalItems}` : ""}` :
+              t === "checklist" ? `✓ Prep${completedTasks > 0 ? ` ${completedTasks}/${trip.preDeparture.length}` : ""}` :
+              t === "budget" ? "💰 Budget" : "✦ Ask CFO"
+            } />
+        ))}
+      </div>
+
+      {/* ══════════════════════════════════════════════════════════════
+          TAB: OVERVIEW
+      ══════════════════════════════════════════════════════════════ */}
+      {detailTab === "overview" && (
+        <>
+          {/* Readiness breakdown */}
+          <Card>
+            <p style={{ fontFamily: F.sans, fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: T.taupe, margin: "0 0 12px" }}>TRIP READINESS</p>
+            {[
+              { label: "Documents",  value: readiness.documents, icon: "◎" },
+              { label: "Budget set", value: readiness.budget,    icon: "💰" },
+              { label: "Packing",    value: readiness.packing,   icon: "🧳" },
+              { label: "Booking",    value: readiness.booking,   icon: "◈" },
+              { label: "Prep tasks", value: readiness.tasks,     icon: "✓" },
+            ].map(r => (
+              <div key={r.label} style={{ marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                  <span style={{ fontFamily: F.sans, fontSize: 12, color: T.bark }}>{r.icon} {r.label}</span>
+                  <span style={{ fontFamily: F.sans, fontSize: 12, color: r.value >= 80 ? T.sage : r.value >= 40 ? T.gold : T.blush, fontWeight: 600 }}>{r.value}%</span>
+                </div>
+                <ProgressBar value={r.value} max={100} color={r.value >= 80 ? T.sage : r.value >= 40 ? T.gold : T.blush} height={4} />
+              </div>
+            ))}
+          </Card>
+
+          {/* Travellers */}
+          <Card>
+            <p style={{ fontFamily: F.sans, fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: T.taupe, margin: "0 0 12px" }}>TRAVELLERS</p>
+            {trip.travellers.map((t, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 0", borderBottom: `1px solid ${T.linen}` }}>
+                <span style={{ fontSize: 20 }}>{t.type === "adult" ? "👩" : t.age < 2 ? "👶" : "🧒"}</span>
+                <div style={{ flex: 1 }}>
+                  <p style={{ fontFamily: F.sans, fontSize: 13, fontWeight: 600, color: T.esp, margin: 0 }}>{t.name}</p>
+                  <p style={{ fontFamily: F.sans, fontSize: 11, color: T.taupe, margin: 0, textTransform: "capitalize" }}>{t.role || t.type} · {t.age}y</p>
                 </div>
               </div>
             ))}
           </Card>
 
-          {/* Quick stats */}
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:12 }}>
-            {[
-              { label:"Nights",        value:trip.nights },
-              { label:"Travellers",    value:trip.travellers.length },
-              { label:"Packing",       value:totalItems>0?`${checkedItems}/${totalItems}`:"Not started" },
-              { label:"Docs Ready",    value:`${docsReady}/${trip.documents.length}` },
-            ].map(s=>(
-              <div key={s.label} style={{ background:T.ivory, borderRadius:16, padding:"14px 16px", border:`1px solid ${T.linen}` }}>
-                <p style={{ fontFamily:F.sans, fontSize:10, fontWeight:700, letterSpacing:"0.12em", textTransform:"uppercase", color:T.taupe, margin:"0 0 4px" }}>{s.label}</p>
-                <p style={{ fontFamily:F.serif, fontSize:22, fontWeight:700, color:T.esp, margin:0 }}>{s.value}</p>
-              </div>
-            ))}
-          </div>
-
-          {/* Packing progress */}
-          {totalItems>0 && <Card>
-            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
-              <p style={{ fontFamily:F.sans, fontSize:11, fontWeight:700, letterSpacing:"0.12em", textTransform:"uppercase", color:T.taupe, margin:0 }}>PACKING PROGRESS</p>
-              <span style={{ fontFamily:F.sans, fontSize:11, color:T.gold }}>{checkedItems}/{totalItems}</span>
-            </div>
-            <ProgressBar value={checkedItems} max={totalItems} color={T.gold}/>
-          </Card>}
-
-          {/* Documents per blueprint */}
+          {/* Documents */}
           <Card>
-            <p style={{ fontFamily:F.sans, fontSize:11, fontWeight:700, letterSpacing:"0.12em", textTransform:"uppercase", color:T.taupe, margin:"0 0 12px" }}>DOCUMENTS</p>
-            {(trip.documents||[]).map((doc,i)=>(
-              <div key={i} onClick={()=>toggleDoc(i)} style={{ display:"flex", alignItems:"center", gap:12, padding:"10px 0", borderBottom:`1px solid ${T.linen}`, cursor:"pointer" }}>
-                <span style={{ fontSize:20 }}>{doc.type==="passport"?"◈":doc.type==="insurance"?"◉":doc.type==="visa"?"◎":"◦"}</span>
-                <p style={{ fontFamily:F.sans, fontSize:13, color:T.esp, margin:0, flex:1, textTransform:"capitalize" }}>{doc.type}{doc.notes?` — ${doc.notes}`:""}</p>
-                <span style={{ background:`${STATUS_COLORS[doc.status]}20`, color:STATUS_COLORS[doc.status], fontFamily:F.sans, fontSize:11, fontWeight:700, padding:"4px 10px", borderRadius:20, textTransform:"capitalize" }}>{doc.status}</span>
-              </div>
-            ))}
-            <p style={{ fontFamily:F.sans, fontSize:10, color:T.taupe, margin:"8px 0 0", textAlign:"center" }}>Tap to cycle status</p>
+            <p style={{ fontFamily: F.sans, fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: T.taupe, margin: "0 0 12px" }}>DOCUMENTS</p>
+            {trip.documents.map((doc, i) => {
+              const statusColor = { needed: T.blush, ready: T.sage, expired: "#dc2626" }[doc.status];
+              return (
+                <div key={i} onClick={() => toggleDoc(i)}
+                  style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: `1px solid ${T.linen}`, cursor: "pointer" }}>
+                  <span style={{ fontSize: 18 }}>{doc.type === "passport" ? "◈" : doc.type === "insurance" ? "◉" : "◎"}</span>
+                  <div style={{ flex: 1 }}>
+                    <p style={{ fontFamily: F.sans, fontSize: 13, color: T.esp, margin: 0, textTransform: "capitalize" }}>
+                      {doc.type}{doc.traveller ? ` — ${doc.traveller}` : ""}
+                    </p>
+                  </div>
+                  <span style={{ background: `${statusColor}20`, color: statusColor, fontFamily: F.sans, fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, textTransform: "capitalize" }}>
+                    {doc.status}
+                  </span>
+                </div>
+              );
+            })}
+            <p style={{ fontFamily: F.sans, fontSize: 10, color: T.taupe, margin: "8px 0 0", textAlign: "center" }}>Tap to update status</p>
           </Card>
 
-          {!trip.itinerary.length && <Button onClick={()=>generateItinerary(trip)} disabled={planning} variant="gold">{planning?<span>✦ Planning...</span>:"✦ Generate Itinerary"}</Button>}
-          {!trip.packingList.length && <Button onClick={()=>generatePackingList(trip)} disabled={packingLoading} variant="secondary" style={{ marginTop:8 }}>{packingLoading?"✦ Generating...":"✦ Generate Packing List"}</Button>}
-        </>}
-
-        {/* ── ITINERARY per blueprint with mum moment ───────────────── */}
-        {detailTab==="itinerary" && <>
-          {(trip.itinerary||[]).length ? (
-            <>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-                <AIBadge label="Planned by Nora"/>
-                <button onClick={()=>generateItinerary(trip)} style={{ background:"none", border:`1px solid ${T.linen}`, borderRadius:10, padding:"6px 12px", fontFamily:F.sans, fontSize:11, color:T.taupe, cursor:"pointer" }}>↻ Redo</button>
-              </div>
-              {trip.itinerary.map((day,di)=>(
-                <ExpandableDay key={di} day={day} currency={trip.budget?.currency??'USD'} />
-              ))}
-
-            </>
-          ) : (
-            <Card>
-              <p style={{ fontFamily:F.sans, fontSize:14, color:T.taupe, textAlign:"center", padding:"20px 0", lineHeight:1.6 }}>No itinerary yet — generate one in Overview.</p>
-            </Card>
+          {/* Generate buttons */}
+          {!trip.itinerary.length && (
+            <Button onClick={() => generateItinerary(trip)} disabled={planning} variant="gold">
+              {planning ? "✦ Planning itinerary..." : "✦ Generate Itinerary"}
+            </Button>
           )}
-        </>}
+          {!trip.packingList.length && (
+            <Button onClick={() => generatePackingList(trip)} disabled={packingLoading} variant="secondary" style={{ marginTop: 8 }}>
+              {packingLoading ? "✦ Building packing list..." : "✦ Generate Packing List"}
+            </Button>
+          )}
+        </>
+      )}
 
-        {/* ── PACKING LIST per blueprint sections ───────────────────── */}
-        {detailTab==="packing" && <>
+      {/* ══════════════════════════════════════════════════════════════
+          TAB: ITINERARY
+      ══════════════════════════════════════════════════════════════ */}
+      {detailTab === "itinerary" && (
+        <>
+          {trip.itinerary.length ? trip.itinerary.map((day, i) => (
+            <Card key={i}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+                <div>
+                  <p style={{ fontFamily: F.sans, fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: T.taupe, margin: "0 0 2px" }}>DAY {day.day}</p>
+                  <p style={{ fontFamily: F.serif, fontSize: 16, fontStyle: "italic", color: T.esp, margin: 0 }}>{day.theme}</p>
+                </div>
+                <span style={{ fontFamily: F.sans, fontSize: 11, color: T.taupe }}>{day.date}</span>
+              </div>
+              {[
+                { label: "Morning",   value: day.morning,   icon: "☀" },
+                { label: "Afternoon", value: day.afternoon, icon: "◎" },
+                { label: "Evening",   value: day.evening,   icon: "✦" },
+              ].map(slot => (
+                <div key={slot.label} style={{ display: "flex", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.linen}` }}>
+                  <span style={{ fontSize: 14, width: 20, flexShrink: 0 }}>{slot.icon}</span>
+                  <div>
+                    <p style={{ fontFamily: F.sans, fontSize: 10, color: T.taupe, margin: "0 0 2px", textTransform: "uppercase", letterSpacing: "0.06em" }}>{slot.label}</p>
+                    <p style={{ fontFamily: F.sans, fontSize: 13, color: T.esp, margin: 0, lineHeight: 1.5 }}>{slot.value}</p>
+                  </div>
+                </div>
+              ))}
+              {day.mumMoment && (
+                <div style={{ marginTop: 10, padding: "10px 12px", background: `${T.gold}10`, borderRadius: 10, borderLeft: `3px solid ${T.gold}` }}>
+                  <p style={{ fontFamily: F.sans, fontSize: 10, fontWeight: 700, color: T.gold, margin: "0 0 3px", textTransform: "uppercase", letterSpacing: "0.08em" }}>✦ MUM MOMENT</p>
+                  <p style={{ fontFamily: F.sans, fontSize: 12, color: T.bark, margin: 0, lineHeight: 1.5 }}>{day.mumMoment}</p>
+                </div>
+              )}
+              {day.tip && (
+                <p style={{ fontFamily: F.sans, fontSize: 11, color: T.taupe, margin: "10px 0 0", fontStyle: "italic" }}>💡 {day.tip}</p>
+              )}
+            </Card>
+          )) : (
+            <div style={{ textAlign: "center", padding: "32px 0" }}>
+              <p style={{ fontFamily: F.sans, fontSize: 13, color: T.taupe, marginBottom: 16 }}>No itinerary yet — let Nora plan your days.</p>
+              <Button onClick={() => generateItinerary(trip)} disabled={planning} variant="gold">
+                {planning ? "Planning..." : "✦ Generate Itinerary"}
+              </Button>
+            </div>
+          )}
+          {trip.itinerary.length > 0 && (
+            <button onClick={() => generateItinerary(trip)} disabled={planning}
+              style={{ width: "100%", marginTop: 8, padding: "10px", background: "none", border: `1px solid ${T.linen}`, borderRadius: 12, fontFamily: F.sans, fontSize: 12, color: T.taupe, cursor: "pointer" }}>
+              {planning ? "Regenerating..." : "↻ Regenerate itinerary"}
+            </button>
+          )}
+        </>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════
+          TAB: PACKING
+      ══════════════════════════════════════════════════════════════ */}
+      {detailTab === "packing" && (
+        <>
           {trip.packingList.length ? (
             <>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-                <AIBadge label="Packed by Nora"/>
-                <button onClick={()=>generatePackingList(trip)} style={{ background:"none", border:`1px solid ${T.linen}`, borderRadius:10, padding:"6px 12px", fontFamily:F.sans, fontSize:11, color:T.taupe, cursor:"pointer" }}>↻ Redo</button>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <AIBadge label="Packed by Nora" />
+                <button onClick={() => generatePackingList(trip)} disabled={packingLoading}
+                  style={{ background: "none", border: `1px solid ${T.linen}`, borderRadius: 10, padding: "6px 12px", fontFamily: F.sans, fontSize: 11, color: T.taupe, cursor: "pointer" }}>
+                  {packingLoading ? "..." : "↻ Redo"}
+                </button>
               </div>
-              {trip.packingList.map((sec,si)=>{
-                const secChecked = sec.items.filter(i=>i.checked).length;
-                const secIcons: Record<string,string> = { Mum:"✦", Kids:"◆", Everyone:"◈", Documents:"◎", Tech:"◉" };
+              {trip.packingList.map((sec, si) => {
+                const secChecked = sec.items.filter(i => i.checked).length;
                 return (
                   <Card key={si}>
-                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-                      <p style={{ fontFamily:F.sans, fontSize:11, fontWeight:700, letterSpacing:"0.12em", textTransform:"uppercase", color:T.taupe, margin:0 }}>
-                        {secIcons[sec.name]||"◦"} {sec.name}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                      <p style={{ fontFamily: F.sans, fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: T.taupe, margin: 0 }}>
+                        {sec.name}
                       </p>
-                      <span style={{ fontFamily:F.sans, fontSize:11, color:T.gold }}>{secChecked}/{sec.items.length}</span>
+                      <span style={{ fontFamily: F.sans, fontSize: 11, color: T.gold }}>{secChecked}/{sec.items.length}</span>
                     </div>
-                    <ProgressBar value={secChecked} max={sec.items.length} color={T.gold} height={4}/>
-                    <div style={{ marginTop:12 }}>
-                      {sec.items.map((item,ii)=>(
-                        <div key={ii} onClick={()=>togglePacking(si,ii)} style={{ display:"flex", alignItems:"center", gap:12, padding:"9px 0", borderBottom:`1px solid ${T.linen}`, cursor:"pointer", touchAction:"manipulation" }}>
-                          <div style={{ width:22, height:22, borderRadius:7, border:`2px solid ${item.checked?T.sage:item.essential?"#dc2626":T.linen}`, background:item.checked?T.sage:"transparent", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontSize:13 }}>{item.checked?"✓":""}</div>
-                          <div style={{ flex:1 }}>
-                            <p style={{ fontFamily:F.sans, fontSize:13, color:item.checked?T.taupe:T.esp, margin:0, textDecoration:item.checked?"line-through":"none" }}>
-                              {item.quantity>1?`${item.quantity}x `:""}{item.name}
-                            </p>
+                    <ProgressBar value={secChecked} max={sec.items.length} color={T.gold} height={4} />
+                    <div style={{ marginTop: 10 }}>
+                      {sec.items.map((item, ii) => (
+                        <div key={ii} onClick={() => togglePacking(si, ii)}
+                          style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 0", borderBottom: `1px solid ${T.linen}`, cursor: "pointer", touchAction: "manipulation" }}>
+                          <div style={{ width: 22, height: 22, borderRadius: 7, border: `2px solid ${item.checked ? T.sage : item.essential ? "#dc2626" : T.linen}`, background: item.checked ? T.sage : "transparent", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 13 }}>
+                            {item.checked ? "✓" : ""}
                           </div>
-                          {item.essential && !item.checked && <span style={{ fontFamily:F.sans, fontSize:9, color:"#dc2626", textTransform:"uppercase", letterSpacing:"0.08em" }}>essential</span>}
-                          {item.weatherDependent && <span style={{ fontSize:12 }}>🌤</span>}
+                          <p style={{ fontFamily: F.sans, fontSize: 13, color: item.checked ? T.taupe : T.esp, margin: 0, flex: 1, textDecoration: item.checked ? "line-through" : "none" }}>
+                            {item.quantity > 1 ? `${item.quantity}× ` : ""}{item.name}
+                          </p>
+                          {item.essential && !item.checked && <span style={{ fontFamily: F.sans, fontSize: 9, color: "#dc2626", textTransform: "uppercase", letterSpacing: "0.08em" }}>essential</span>}
+                          {item.weatherDependent && <span style={{ fontSize: 12 }}>🌤</span>}
                         </div>
                       ))}
                     </div>
@@ -526,209 +886,126 @@ Personalise quantities to ${trip.nights} nights. Include weather-appropriate ite
               })}
             </>
           ) : (
-            <Button onClick={()=>generatePackingList(trip)} disabled={packingLoading} variant="gold">
-              {packingLoading?"✦ Generating...":"✦ Generate Packing List"}
-            </Button>
+            <div style={{ textAlign: "center", padding: "32px 0" }}>
+              <p style={{ fontFamily: F.sans, fontSize: 13, color: T.taupe, marginBottom: 16 }}>Nora will build a smart packing list for your family.</p>
+              <Button onClick={() => generatePackingList(trip)} disabled={packingLoading} variant="gold">
+                {packingLoading ? "Building list..." : "✦ Generate Packing List"}
+              </Button>
+            </div>
           )}
-        </>}
-
-        {/* ── PRE-DEPARTURE CHECKLIST per blueprint ─────────────────── */}
-        {detailTab==="checklist" && <>
-          <Card>
-            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
-              <p style={{ fontFamily:F.sans, fontSize:11, fontWeight:700, letterSpacing:"0.12em", textTransform:"uppercase", color:T.taupe, margin:0 }}>PRE-DEPARTURE TASKS</p>
-              <span style={{ fontFamily:F.sans, fontSize:11, color:T.gold }}>{completedPreDep}/{trip.preDeparture.length}</span>
-            </div>
-            <ProgressBar value={completedPreDep} max={trip.preDeparture.length} color={T.sage}/>
-          </Card>
-          {(trip.preDeparture||[]).map((task,i)=>{
-            const daysLeft = Math.ceil((safeDate(task.deadline).getTime()-Date.now())/(1000*60*60*24));
-            const isOverdue = daysLeft < 0 && !task.completed;
-            return (
-              <div key={i} onClick={()=>togglePreDep(i)} style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 16px", background:task.completed?T.ivory:isOverdue?`${T.blush}10`:T.ivory, borderRadius:16, border:`1.5px solid ${task.completed?T.linen:isOverdue?T.blush:T.linen}`, marginBottom:8, cursor:"pointer", touchAction:"manipulation" }}>
-                <div style={{ width:24, height:24, borderRadius:8, border:`2px solid ${task.completed?T.sage:isOverdue?"#dc2626":CAT_COLORS[task.category]||T.linen}`, background:task.completed?T.sage:"transparent", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontSize:14 }}>{task.completed?"✓":""}</div>
-                <div style={{ flex:1 }}>
-                  <p style={{ fontFamily:F.sans, fontSize:13, color:task.completed?T.taupe:T.esp, margin:0, textDecoration:task.completed?"line-through":"none" }}>{task.task}</p>
-                  <p style={{ fontFamily:F.sans, fontSize:11, color:isOverdue?"#dc2626":T.taupe, margin:"2px 0 0" }}>
-                    {isOverdue?"⚠ Overdue — ":`By `}{safeDate(task.deadline).toLocaleDateString("en-US",{month:"short",day:"numeric"})}
-                    {" · "}<span style={{ color:CAT_COLORS[task.category]||T.taupe }}>{task.category}</span>
-                  </p>
-                </div>
-              </div>
-            );
-          })}
-        </>}
-
-        {/* ── BUDGET per blueprint breakdown ────────────────────────── */}
-        {detailTab==="edit" && <>
-          <Card>
-            <p style={{ fontFamily:F.sans, fontSize:11, fontWeight:700, letterSpacing:"0.12em", textTransform:"uppercase", color:T.taupe, margin:"0 0 12px" }}>EDIT TRIP</p>
-            <CountryInput value={dest} onChange={setDest} placeholder="City or country (e.g. Mallorca, Japan)" />
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
-              <div>
-                <p style={{ fontFamily:F.sans, fontSize:11, color:T.taupe, margin:"0 0 4px" }}>Departure</p>
-                <input type="date" value={depDate} onChange={e=>setDepDate(e.target.value)} style={{ width:"100%", background:T.sand, border:`1.5px solid ${T.linen}`, borderRadius:12, padding:"11px 12px", fontFamily:F.sans, fontSize:14, color:T.esp, outline:"none", boxSizing:"border-box" as any, minHeight:44 }}/>
-              </div>
-              <div>
-                <p style={{ fontFamily:F.sans, fontSize:11, color:T.taupe, margin:"0 0 4px" }}>Return</p>
-                <input type="date" value={retDate} onChange={e=>setRetDate(e.target.value)} style={{ width:"100%", background:T.sand, border:`1.5px solid ${T.linen}`, borderRadius:12, padding:"11px 12px", fontFamily:F.sans, fontSize:14, color:T.esp, outline:"none", boxSizing:"border-box" as any, minHeight:44 }}/>
-              </div>
-            </div>
-            <Input value={budget} onChange={setBudget} placeholder="Total budget" style={{ marginBottom:8 }}/>
-            <p style={{ fontFamily:F.sans, fontSize:11, fontWeight:700, letterSpacing:"0.12em", textTransform:"uppercase", color:T.taupe, margin:"0 0 8px" }}>TRAVELLERS</p>
-            {travellers.map((t,i)=>(
-              <div key={i} style={{ display:"flex", gap:6, marginBottom:6, alignItems:"center" }}>
-                <input value={t.name} onChange={e=>updateTraveller(i,"name",e.target.value)} placeholder="Name" style={{ flex:2, background:T.sand, border:`1.5px solid ${T.linen}`, borderRadius:10, padding:"8px 10px", fontFamily:F.sans, fontSize:14, color:T.esp, outline:"none", minHeight:40 }}/>
-                <input value={t.age} onChange={e=>updateTraveller(i,"age",parseInt(e.target.value)||0)} type="number" placeholder="Age" style={{ flex:1, background:T.sand, border:`1.5px solid ${T.linen}`, borderRadius:10, padding:"8px 10px", fontFamily:F.sans, fontSize:14, color:T.esp, outline:"none", minHeight:40 }}/>
-                <select value={t.type} onChange={e=>updateTraveller(i,"type",e.target.value as any)} style={{ flex:1, background:T.sand, border:`1.5px solid ${T.linen}`, borderRadius:10, padding:"8px 6px", fontFamily:F.sans, fontSize:12, color:T.esp, outline:"none", minHeight:40 }}>
-                  <option value="adult">Adult</option>
-                  <option value="child">Child</option>
-                  <option value="infant">Infant</option>
-                </select>
-              </div>
-            ))}
-            <button onClick={addTraveller} style={{ background:"none", border:`1px dashed ${T.linen}`, borderRadius:10, padding:"8px", width:"100%", fontFamily:F.sans, fontSize:12, color:T.taupe, cursor:"pointer", marginBottom:12, minHeight:36 }}>+ Add traveller</button>
-            <Button onClick={async () => {
-              if (!dest || !depDate) return;
-              const dep = new Date(depDate);
-              const ret = retDate ? new Date(retDate) : null;
-              const nights = ret ? Math.ceil((ret.getTime()-dep.getTime())/(1000*60*60*24)) : trip.nights;
-              const updated = { ...trip, destination:dest, departureDate:depDate, returnDate:retDate||undefined, nights, travellers, budget:{ ...trip.budget, total:parseFloat(budget)||trip.budget.total } };
-              const allTrips = trips.map(t => t.id===trip.id ? updated : t);
-              await persist(allTrips);
-              setActiveTrip(normTrip(updated));
-              setDetailTab("overview");
-              toast.success("Trip updated ✓");
-            }} variant="gold">Save Changes</Button>
-          </Card>
-        </>}
-
-        {detailTab==="budget" && <>
-          <Card>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
-              <p style={{ fontFamily:F.sans, fontSize:11, fontWeight:700, letterSpacing:"0.12em", textTransform:"uppercase", color:T.taupe, margin:0 }}>TRIP BUDGET</p>
-              <p style={{ fontFamily:F.serif, fontSize:24, fontWeight:700, color:T.esp, margin:0 }}>{trip.budget?.currency??'USD'}{(trip.budget?.total??0).toLocaleString()}</p>
-            </div>
-            {Object.entries(trip.budget.breakdown).map(([cat,amount])=>(
-              <div key={cat} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 0", borderBottom:`1px solid ${T.linen}` }}>
-                <span style={{ fontFamily:F.sans, fontSize:13, color:T.esp, textTransform:"capitalize" }}>{cat}</span>
-                <span style={{ fontFamily:F.sans, fontSize:13, fontWeight:600, color:T.esp }}>{trip.budget?.currency??'USD'}{amount}</span>
-              </div>
-            ))}
-          </Card>
-          <Card>
-            <p style={{ fontFamily:F.sans, fontSize:13, color:T.taupe, textAlign:"center", padding:"8px 0", lineHeight:1.6 }}>
-              Set up a savings goal in Budget → Goals to track your {trip.destination} savings 💛
-            </p>
-          </Card>
-        </>}
-      </div>
-    );
-  }
-
-  // ── Trip list view ────────────────────────────────────────────────
-  return (
-    <div style={{ animation:"fadeUp .45s ease both" }}>
-      <PageTitle eyebrow="ADVENTURES" title="Trips"/>
-
-      {trips.length>0 && (() => {
-        const next = trips.filter(t=>DAYS_UNTIL(t.departureDate)>0).sort((a,b)=>DAYS_UNTIL(a.departureDate)-DAYS_UNTIL(b.departureDate))[0];
-        if (!next) return null;
-        return (
-          <HeroCard
-            eyebrow="NEXT TRIP"
-            title={next.destination}
-            subtitle={`${DAYS_UNTIL(next.departureDate)} days away · ${next.nights} nights · ${next.travellers.length} traveller${next.travellers.length>1?"s":""}`}
-            color={T.esp}
-          />
-        );
-      })()}
-
-      <Button onClick={()=>setShowAdd(!showAdd)} variant="gold" style={{ marginBottom:16 }}>+ Plan a New Trip</Button>
-
-      {showAdd && <Card>
-        <p style={{ fontFamily:F.sans, fontSize:11, fontWeight:700, letterSpacing:"0.12em", textTransform:"uppercase", color:T.taupe, margin:"0 0 12px" }}>NEW TRIP</p>
-        <CountryInput value={dest} onChange={setDest} placeholder="City or country (e.g. Mallorca, Japan)" />
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
-          <div>
-            <p style={{ fontFamily:F.sans, fontSize:11, color:T.taupe, margin:"0 0 4px" }}>Departure</p>
-            <input type="date" value={depDate} onChange={e=>setDepDate(e.target.value)} style={{ width:"100%", background:T.sand, border:`1.5px solid ${T.linen}`, borderRadius:12, padding:"11px 12px", fontFamily:F.sans, fontSize:14, color:T.esp, outline:"none", boxSizing:"border-box", minHeight:44 }}/>
-          </div>
-          <div>
-            <p style={{ fontFamily:F.sans, fontSize:11, color:T.taupe, margin:"0 0 4px" }}>Return</p>
-            <input type="date" value={retDate} onChange={e=>setRetDate(e.target.value)} style={{ width:"100%", background:T.sand, border:`1.5px solid ${T.linen}`, borderRadius:12, padding:"11px 12px", fontFamily:F.sans, fontSize:14, color:T.esp, outline:"none", boxSizing:"border-box", minHeight:44 }}/>
-          </div>
-        </div>
-        <div style={{ display:"flex", gap:8, marginBottom:12 }}>
-          <div style={{ flex:2 }}>
-            <p style={{ fontFamily:F.sans, fontSize:11, color:T.taupe, margin:"0 0 4px" }}>Budget</p>
-            <Input value={budget} onChange={setBudget} placeholder="Total budget" type="number"/>
-          </div>
-          <div style={{ flex:1 }}>
-            <p style={{ fontFamily:F.sans, fontSize:11, color:T.taupe, margin:"0 0 4px" }}>Currency</p>
-            <select value={currency} onChange={e=>setCurrency(e.target.value)} style={{ width:"100%", background:T.sand, border:`1.5px solid ${T.linen}`, borderRadius:12, padding:"11px 12px", fontFamily:F.sans, fontSize:14, color:T.esp, outline:"none", minHeight:44 }}>
-              {["GBP","USD","EUR","AUD","CAD"].map(c=><option key={c}>{c}</option>)}
-            </select>
-          </div>
-        </div>
-
-        {/* Travellers per blueprint */}
-        <p style={{ fontFamily:F.sans, fontSize:11, fontWeight:700, letterSpacing:"0.12em", textTransform:"uppercase", color:T.taupe, margin:"0 0 8px" }}>TRAVELLERS</p>
-        {travellers.map((t,i)=>(
-          <div key={i} style={{ background:T.sand, borderRadius:12, padding:"10px 12px", marginBottom:8, border:`1px solid ${T.linen}` }}>
-            <div style={{ display:"flex", gap:6, alignItems:"center" }}>
-              <input value={t.name} onChange={e=>updateTraveller(i,"name",e.target.value)} placeholder="Name" style={{ flex:1, background:"#fff", border:`1.5px solid ${T.linen}`, borderRadius:8, padding:"8px 10px", fontFamily:F.sans, fontSize:14, color:T.esp, outline:"none", minHeight:38 }}/>
-              {travellers.length>1 && <button onClick={()=>setTravellers(p=>p.filter((_,ti)=>ti!==i))} style={{ background:"none", border:"none", color:T.taupe, cursor:"pointer", fontSize:18, padding:"0 4px", flexShrink:0 }}>×</button>}
-            </div>
-            <div style={{ display:"flex", gap:6, marginTop:6 }}>
-              <input value={t.age} onChange={e=>updateTraveller(i,"age",parseInt(e.target.value)||0)} type="number" placeholder="Age" style={{ width:70, background:"#fff", border:`1.5px solid ${T.linen}`, borderRadius:8, padding:"6px 10px", fontFamily:F.sans, fontSize:14, color:T.esp, outline:"none", minHeight:36 }}/>
-              <select value={t.type} onChange={e=>updateTraveller(i,"type",e.target.value as any)} style={{ flex:1, background:"#fff", border:`1.5px solid ${T.linen}`, borderRadius:8, padding:"6px 10px", fontFamily:F.sans, fontSize:13, color:T.esp, outline:"none", minHeight:36 }}>
-                <option value="adult">Adult</option>
-                <option value="child">Child</option>
-                <option value="infant">Infant</option>
-              </select>
-            </div>
-          </div>
-        ))}
-        <button onClick={addTraveller} style={{ background:"none", border:`1px dashed ${T.linen}`, borderRadius:10, padding:"8px", width:"100%", fontFamily:F.sans, fontSize:12, color:T.taupe, cursor:"pointer", marginBottom:12, minHeight:36 }}>+ Add traveller</button>
-
-        <div style={{ display:"flex", gap:8 }}>
-          <Button onClick={addTrip} disabled={!dest||!depDate} variant="gold" style={{ flex:1 }}>Add Trip</Button>
-          <Button onClick={()=>setShowAdd(false)} variant="ghost" style={{ flex:1 }}>Cancel</Button>
-        </div>
-      </Card>}
-
-      {trips.length===0 && !showAdd && (
-        <Card><p style={{ fontFamily:F.sans, fontSize:14, color:T.taupe, textAlign:"center", padding:"20px 0", lineHeight:1.6 }}>No trips planned yet.<br/>Add your next adventure above!</p></Card>
+        </>
       )}
 
-      {trips.map(t=>{
-        const du = DAYS_UNTIL(t.departureDate);
-        return (
-          <div key={t.id} onClick={()=>{ 
-                const nt = normTrip(t); 
-                setActiveTrip(nt); 
-                setDetailTab("overview");
-                setDest(nt.destination||"");
-                setDepDate(nt.departureDate||"");
-                setRetDate(nt.returnDate||"");
-                setBudget(String(nt.budget?.total||""));
-                setTravellers(nt.travellers.length ? nt.travellers : [{ name:"", age:30, type:"adult" as const }]);
-              }} style={{ display:"flex", gap:14, padding:"16px", background:T.ivory, borderRadius:20, border:`1px solid ${T.linen}`, marginBottom:10, cursor:"pointer", touchAction:"manipulation" }}>
-            <div style={{ width:52, height:52, borderRadius:14, background:`linear-gradient(135deg,${du<=7?"#dc2626":du<=30?T.gold:T.esp},${du<=7?"#991b1b":du<=30?"#8B6914":"#3D2E22"})`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:24, flexShrink:0 }}>✈️</div>
-            <div style={{ flex:1 }}>
-              <p style={{ fontFamily:F.serif, fontSize:18, fontStyle:"italic", color:T.esp, margin:"0 0 4px" }}>{t.destination}</p>
-              <p style={{ fontFamily:F.sans, fontSize:11, color:T.taupe, margin:0 }}>
-                {t.nights} nights · {t.travellers.length} traveller{t.travellers.length>1?"s":""} · {safeDate(t.departureDate).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"})}
-              </p>
-            </div>
-            <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
-              <span style={{ background:du<=7?`#dc262615`:du<=30?T.goldP:T.sand, color:du<=7?"#dc2626":du<=30?T.gold:T.taupe, fontFamily:F.sans, fontSize:11, fontWeight:700, padding:"4px 10px", borderRadius:20 }}>{du>0?`${du}d`:"Now"}</span>
-              <span style={{ fontFamily:F.sans, fontSize:10, color:T.taupe, textTransform:"capitalize" }}>{t.status}</span>
-            </div>
+      {/* ══════════════════════════════════════════════════════════════
+          TAB: CHECKLIST
+      ══════════════════════════════════════════════════════════════ */}
+      {detailTab === "checklist" && (
+        <Card>
+          <p style={{ fontFamily: F.sans, fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: T.taupe, margin: "0 0 4px" }}>PRE-DEPARTURE</p>
+          <p style={{ fontFamily: F.sans, fontSize: 12, color: T.taupe, margin: "0 0 16px" }}>{completedTasks} of {trip.preDeparture.length} complete</p>
+          <ProgressBar value={completedTasks} max={trip.preDeparture.length} color={T.sage} height={6} />
+          <div style={{ marginTop: 16 }}>
+            {trip.preDeparture.map((task, i) => (
+              <div key={i} onClick={() => toggleTask(i)}
+                style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "10px 0", borderBottom: `1px solid ${T.linen}`, cursor: "pointer", touchAction: "manipulation" }}>
+                <div style={{ width: 22, height: 22, borderRadius: 7, border: `2px solid ${task.completed ? T.sage : T.linen}`, background: task.completed ? T.sage : "transparent", flexShrink: 0, marginTop: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 13 }}>
+                  {task.completed ? "✓" : ""}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <p style={{ fontFamily: F.sans, fontSize: 13, color: task.completed ? T.taupe : T.esp, margin: "0 0 2px", textDecoration: task.completed ? "line-through" : "none" }}>{task.task}</p>
+                  <p style={{ fontFamily: F.sans, fontSize: 10, color: T.taupe, margin: 0 }}>{CATEGORY_ICONS[task.category]} {task.deadline}</p>
+                </div>
+              </div>
+            ))}
           </div>
-        );
-      })}
+        </Card>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════
+          TAB: BUDGET
+      ══════════════════════════════════════════════════════════════ */}
+      {detailTab === "budget" && (
+        <>
+          <Card>
+            <p style={{ fontFamily: F.sans, fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: T.taupe, margin: "0 0 12px" }}>TRIP BUDGET</p>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 16 }}>
+              <span style={{ fontFamily: F.serif, fontSize: 34, fontWeight: 700, color: T.esp }}>{trip.budget.currency}{trip.budget.total.toLocaleString()}</span>
+              <span style={{ fontFamily: F.sans, fontSize: 13, color: T.taupe }}>total</span>
+            </div>
+            {Object.entries(trip.budget.breakdown).map(([key, val]) => {
+              const pct = trip.budget.total > 0 ? Math.round((val / trip.budget.total) * 100) : 0;
+              return (
+                <div key={key} style={{ marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ fontFamily: F.sans, fontSize: 12, color: T.bark, textTransform: "capitalize" }}>{key}</span>
+                    <span style={{ fontFamily: F.sans, fontSize: 12, color: T.esp, fontWeight: 600 }}>{trip.budget.currency}{val.toLocaleString()} · {pct}%</span>
+                  </div>
+                  <ProgressBar value={pct} max={100} color={T.gold} height={4} />
+                </div>
+              );
+            })}
+          </Card>
+          <button onClick={() => askCFO(`Can we afford a ${trip.nights}-night trip to ${trip.destination} costing ${trip.budget.currency}${trip.budget.total}?`)}
+            style={{ width: "100%", padding: "12px", background: T.esp, color: "#fff", border: "none", borderRadius: 14, fontFamily: F.sans, fontSize: 13, fontWeight: 600, cursor: "pointer", marginTop: 8 }}>
+            ✦ Ask CFO: Can we afford this?
+          </button>
+        </>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════
+          TAB: ASK CFO
+      ══════════════════════════════════════════════════════════════ */}
+      {detailTab === "ask" && (
+        <>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+            {[
+              `Can we afford this ${trip.destination} trip?`,
+              `What's the impact on our emergency fund?`,
+              `Should we delay or book now?`,
+              `How does this affect our savings goals?`,
+            ].map((q, i) => (
+              <button key={i} onClick={() => askCFO(q)} disabled={cfoLoading}
+                style={{ textAlign: "left", padding: "12px 14px", background: T.sand, border: `1px solid ${T.linen}`, borderRadius: 12, fontFamily: F.sans, fontSize: 13, color: T.esp, cursor: "pointer", lineHeight: 1.4 }}>
+                {q} →
+              </button>
+            ))}
+          </div>
+
+          {cfoLoading && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px" }}>
+              <Spinner size={16} />
+              <p style={{ fontFamily: F.sans, fontSize: 13, color: T.taupe, margin: 0 }}>Analyzing household finances...</p>
+            </div>
+          )}
+
+          {cfoResult && !cfoLoading && (
+            <Card>
+              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                <span style={{ fontFamily: F.sans, fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: `${cfoResult.riskLevel === "low" ? T.sage : cfoResult.riskLevel === "high" ? T.blush : T.gold}20`, color: cfoResult.riskLevel === "low" ? T.sage : cfoResult.riskLevel === "high" ? T.blush : T.gold, textTransform: "uppercase" }}>
+                  {cfoResult.riskLevel} risk
+                </span>
+                <span style={{ fontFamily: F.sans, fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: `${T.gold}15`, color: T.gold, textTransform: "uppercase" }}>
+                  {cfoResult.confidence} confidence
+                </span>
+              </div>
+              <p style={{ fontFamily: F.sans, fontSize: 14, fontWeight: 600, color: T.esp, margin: "0 0 10px", lineHeight: 1.6 }}>{cfoResult.summary}</p>
+              <p style={{ fontFamily: F.sans, fontSize: 12, color: T.bark, margin: "0 0 8px", lineHeight: 1.6 }}>{cfoResult.observation}</p>
+              {cfoResult.tradeoffs?.length > 0 && (
+                <div style={{ marginBottom: 10 }}>
+                  {cfoResult.tradeoffs.map((t: string, i: number) => (
+                    <p key={i} style={{ fontFamily: F.sans, fontSize: 12, color: T.bark, margin: "0 0 4px", paddingLeft: 10, borderLeft: `2px solid ${T.linen}` }}>{t}</p>
+                  ))}
+                </div>
+              )}
+              <div style={{ padding: "10px 12px", background: `${T.esp}08`, borderRadius: 10, borderLeft: `3px solid ${T.esp}` }}>
+                <p style={{ fontFamily: F.sans, fontSize: 11, fontWeight: 700, color: T.taupe, margin: "0 0 4px" }}>RECOMMENDATION</p>
+                <p style={{ fontFamily: F.sans, fontSize: 13, fontWeight: 600, color: T.esp, margin: 0 }}>✦ {cfoResult.recommendedAction}</p>
+              </div>
+              <button onClick={() => setCfoResult(null)} style={{ marginTop: 10, background: "none", border: "none", fontFamily: F.sans, fontSize: 11, color: T.taupe, cursor: "pointer" }}>Ask another →</button>
+            </Card>
+          )}
+        </>
+      )}
     </div>
   );
 }

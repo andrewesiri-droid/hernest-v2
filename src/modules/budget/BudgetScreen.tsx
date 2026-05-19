@@ -289,7 +289,7 @@ function HealthScoreRing({ score, grade }: { score: number; grade: string }) {
 // ═══════════════════════════════════════════════════════════════════
 
 export function BudgetScreen() {
-  const { user, profile } = useStore();
+  const { user, profile, householdSnapshot } = useStore();
   const [tab, setTab] = useState<"overview" | "cfo" | "goals" | "insights">("overview");
   const [hasLoaded, setHasLoaded] = useState(false);
 

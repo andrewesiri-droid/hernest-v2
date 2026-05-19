@@ -392,6 +392,27 @@ export function CalendarScreen() {
 
   return (
     <div style={{ animation: "fadeUp .45s ease both" }}>
+      {/* Cross-module alerts */}
+      {householdSnapshot?.financial?.upcomingTripObligation && (() => {
+        const trip = householdSnapshot.financial.upcomingTripObligation!;
+        return trip.daysUntil <= 7 ? (
+          <div style={{ background:`${T.gold}12`, border:`1px solid ${T.gold}30`, borderRadius:12, padding:"10px 14px", marginBottom:8, display:"flex", alignItems:"center", gap:10 }}>
+            <span style={{ fontSize:16 }}>✈</span>
+            <p style={{ fontFamily:F.sans, fontSize:12, color:T.bark, margin:0, lineHeight:1.5 }}>
+              <strong>{trip.name}</strong> is {trip.daysUntil} day{trip.daysUntil === 1 ? "" : "s"} away — make sure your calendar is cleared for departure.
+            </p>
+          </div>
+        ) : null;
+      })()}
+      {householdSnapshot?.financial?.topOverspendCategories?.length > 0 && (
+        <div style={{ background:`${T.blush}10`, border:`1px solid ${T.blush}25`, borderRadius:12, padding:"10px 14px", marginBottom:8, display:"flex", alignItems:"center", gap:10 }}>
+          <span style={{ fontSize:16 }}>💰</span>
+          <p style={{ fontFamily:F.sans, fontSize:12, color:T.bark, margin:0, lineHeight:1.5 }}>
+            Heads up — you're over budget in <strong>{householdSnapshot.financial.topOverspendCategories[0]}</strong> this month.
+          </p>
+        </div>
+      )}
+
       {/* Household state banner */}
       {householdSnapshot?.householdStressLevel === "high" && (
         <div style={{ background:`${T.blush}15`, border:`1px solid ${T.blush}30`, borderRadius:12, padding:"10px 14px", marginBottom:12, display:"flex", alignItems:"center", gap:10 }}>

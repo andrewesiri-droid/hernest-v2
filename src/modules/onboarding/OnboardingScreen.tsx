@@ -36,7 +36,7 @@ function parseKids(input: string): Array<{name: string; age: number}> {
   return parts.map(part => {
     const ageMatch = part.match(/\d+/);
     const name = part.replace(/\d+/g, "").replace(/years?|old|age/gi, "").trim();
-    return { name: name || part, age: ageMatch ? parseInt(ageMatch[0]) : 8 };
+    return { id: crypto.randomUUID(), name: name || part, age: ageMatch ? parseInt(ageMatch[0]) : 8 };
   }).filter(k => k.name.length > 0);
 }
 

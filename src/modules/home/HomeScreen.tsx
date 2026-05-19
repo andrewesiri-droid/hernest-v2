@@ -213,6 +213,8 @@ function HouseholdPulseCard() {
     setInsightLoading(false);
   };
 
+  if (showNoraSetup) return <NoraSetupScreen onComplete={() => setShowNoraSetup(false)} />;
+
   const snap = householdSnapshot;
   const adaptiveConfig = useAdaptiveUX(snap);
   const filteredInsights = filterInsightsForDisplay(householdInsights, adaptiveConfig);
@@ -445,7 +447,7 @@ function IntelligenceCard() {
               <p style={{ fontFamily: F.serif, fontSize: 20, fontWeight: 700, color: T.esp, margin: "0 0 2px" }}>{data.todayEvents || 0}</p>
               <p style={{ fontFamily: F.sans, fontSize: 9, color: T.taupe, margin: 0, textTransform: "uppercase", letterSpacing: "0.08em" }}>Events</p>
             </div>
-            <div onClick={() => setShowNoraSetup(true)} style={{ background: "#fff", borderRadius: 12, padding: "10px 8px", textAlign: "center", border: `1px solid ${T.linen}`, cursor: "pointer" }}>
+            <div onClick={() => useStore.getState().setActiveTab("budget")} style={{ background: "#fff", borderRadius: 12, padding: "10px 8px", textAlign: "center", border: `1px solid ${T.linen}`, cursor: "pointer" }}>
               <p style={{ fontFamily: F.serif, fontSize: 20, fontWeight: 700, color: budgetColor, margin: "0 0 2px" }}>{data.budgetPct || 0}%</p>
               <p style={{ fontFamily: F.sans, fontSize: 9, color: T.taupe, margin: 0, textTransform: "uppercase", letterSpacing: "0.08em" }}>Budget</p>
             </div>
@@ -615,8 +617,6 @@ export function HomeScreen() {
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
   const date = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
-
-  if (showNoraSetup) return <NoraSetupScreen onComplete={() => setShowNoraSetup(false)} />;
 
   return (
     <div style={{ animation: "fadeUp .45s ease both" }}>

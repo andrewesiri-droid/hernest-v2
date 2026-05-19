@@ -1,5 +1,6 @@
 import { loadMemoriesV2, deleteMemory } from '../../core/memoryServiceV2';
 import React, { useState } from "react";
+import { NoraSetupScreen } from "../onboarding/OnboardingScreen";
 import { T, F } from "../../config/theme";
 import { useStore } from "../../core/store";
 import { Card, PageTitle, Button } from "../../shared/components";
@@ -26,6 +27,7 @@ export function SettingsScreen() {
   const [deleteConfirm, setDeleteConfirm] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [showDeleteFlow, setShowDeleteFlow] = useState(false);
+  const [showNoraSetup, setShowNoraSetup] = useState(false);
   const [memoryV2List, setMemoryV2List] = useState<any[]>([]);
   const [showMemoryV2, setShowMemoryV2] = useState(false);
 
@@ -97,6 +99,8 @@ export function SettingsScreen() {
     setDeleting(false);
   };
 
+  if (showNoraSetup) return <NoraSetupScreen onComplete={() => setShowNoraSetup(false)} />;
+
   return (
     <div style={{ animation:"fadeUp .45s ease both" }}>
       <PageTitle eyebrow="ACCOUNT" title="Settings"/>
@@ -117,6 +121,16 @@ export function SettingsScreen() {
 
       {/* ── PARTNER SHARING ─────────────────────────────────────── */}
       {section==="partner" && <>
+        <div style={{ background:T.sand, borderRadius:16, padding:"16px 20px", marginBottom:16, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div>
+            <p style={{ fontFamily:F.sans, fontSize:13, fontWeight:700, color:T.esp, margin:"0 0 2px" }}>Set up with Nora</p>
+            <p style={{ fontFamily:F.sans, fontSize:11, color:T.taupe, margin:0 }}>Update your household info in a conversation with Nora</p>
+          </div>
+          <button onClick={() => setShowNoraSetup(true)}
+            style={{ background:T.esp, color:"#fff", border:"none", borderRadius:10, padding:"8px 16px", fontFamily:F.sans, fontSize:12, fontWeight:600, cursor:"pointer", flexShrink:0 }}>
+            Start ✦
+          </button>
+        </div>
         <Card>
           <p style={{ fontFamily:F.sans, fontSize:11, fontWeight:700, letterSpacing:"0.12em", textTransform:"uppercase", color:T.taupe, margin:"0 0 8px" }}>SHARE WITH PARTNER</p>
           <p style={{ fontFamily:F.sans, fontSize:13, color:T.taupe, margin:"0 0 16px", lineHeight:1.6 }}>

@@ -6,6 +6,7 @@ import { loadData } from "../../core/firebase";
 import { db } from "../../core/db";
 import { Spinner } from "../../shared/components";
 import { createActionsFromInsight, executeRecommendedAction } from "../../core/recommendationActions";
+import { NoraSetupScreen } from "../onboarding/OnboardingScreen";
 import { buildHouseholdSnapshot, generateHouseholdInsights, getTopInsight, loadHouseholdInsights, saveHouseholdInsights } from "../../core/household";
 
 // ── Briefing Hero Card (unchanged) ────────────────────────────────
@@ -177,6 +178,7 @@ function HouseholdPulseCard() {
   const { user, profile, householdSnapshot, householdInsights, setHouseholdSnapshot, setHouseholdInsights, dismissInsight } = useStore();
   const [loading, setLoading] = useState(false);
   const [insightLoading, setInsightLoading] = useState(false);
+  const [showNoraSetup, setShowNoraSetup] = useState(false);
 
   // Load snapshot + insights on mount
   useEffect(() => {
@@ -264,7 +266,7 @@ function HouseholdPulseCard() {
       {/* Three stat pills */}
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         {/* Financial health */}
-        <div onClick={() => useStore.getState().setActiveTab("budget")}
+        <div onClick={() => setShowNoraSetup(true)}
           style={{ flex: 1, padding: "10px 8px", background: "#fff", borderRadius: 14, border: `1px solid ${T.linen}`, textAlign: "center", cursor: "pointer" }}>
           <p style={{ fontFamily: F.serif, fontSize: 22, fontWeight: 700, color: gradeColor(f.financialHealthGrade), margin: "0 0 2px" }}>
             {f.financialHealthGrade}
@@ -356,9 +358,9 @@ function HouseholdPulseCard() {
         <div style={{ background:T.sand, borderRadius:16, padding:"20px", marginBottom:12, textAlign:"center" }}>
           <p style={{ fontFamily:F.serif, fontSize:18, fontStyle:"italic", color:T.esp, margin:"0 0 8px" }}>Nora is ready when you are</p>
           <p style={{ fontFamily:F.sans, fontSize:12, color:T.taupe, margin:"0 0 16px", lineHeight:1.6 }}>Add your income and budget to unlock household insights, financial health scores, and Nora's full intelligence.</p>
-          <button onClick={() => useStore.getState().setActiveTab("budget")}
+          <button onClick={() => setShowNoraSetup(true)}
             style={{ background:T.esp, color:"#fff", border:"none", borderRadius:12, padding:"10px 20px", fontFamily:F.sans, fontSize:13, fontWeight:600, cursor:"pointer" }}>
-            Set up Budget →
+            Set up with Nora ✦
           </button>
         </div>
       )}
@@ -370,7 +372,7 @@ function HouseholdPulseCard() {
           style={{ flex: 1, padding: "8px", background: "none", border: `1px solid ${T.teal}`, borderRadius: 10, fontFamily: F.sans, fontSize: 11, color: T.teal, cursor: "pointer" }}>
           {insightLoading ? "Analyzing..." : householdInsights.length > 0 ? "↺ Refresh insights" : "✦ Generate insights"}
         </button>
-        <button onClick={() => useStore.getState().setActiveTab("budget")}
+        <button onClick={() => setShowNoraSetup(true)}
           style={{ flex: 1, padding: "8px", background: "none", border: `1px solid ${T.linen}`, borderRadius: 10, fontFamily: F.sans, fontSize: 11, color: T.esp, cursor: "pointer" }}>
           View CFO →
         </button>
@@ -443,7 +445,7 @@ function IntelligenceCard() {
               <p style={{ fontFamily: F.serif, fontSize: 20, fontWeight: 700, color: T.esp, margin: "0 0 2px" }}>{data.todayEvents || 0}</p>
               <p style={{ fontFamily: F.sans, fontSize: 9, color: T.taupe, margin: 0, textTransform: "uppercase", letterSpacing: "0.08em" }}>Events</p>
             </div>
-            <div onClick={() => useStore.getState().setActiveTab("budget")} style={{ background: "#fff", borderRadius: 12, padding: "10px 8px", textAlign: "center", border: `1px solid ${T.linen}`, cursor: "pointer" }}>
+            <div onClick={() => setShowNoraSetup(true)} style={{ background: "#fff", borderRadius: 12, padding: "10px 8px", textAlign: "center", border: `1px solid ${T.linen}`, cursor: "pointer" }}>
               <p style={{ fontFamily: F.serif, fontSize: 20, fontWeight: 700, color: budgetColor, margin: "0 0 2px" }}>{data.budgetPct || 0}%</p>
               <p style={{ fontFamily: F.sans, fontSize: 9, color: T.taupe, margin: 0, textTransform: "uppercase", letterSpacing: "0.08em" }}>Budget</p>
             </div>
@@ -613,6 +615,8 @@ export function HomeScreen() {
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
   const date = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+
+  if (showNoraSetup) return <NoraSetupScreen onComplete={() => setShowNoraSetup(false)} />;
 
   return (
     <div style={{ animation: "fadeUp .45s ease both" }}>

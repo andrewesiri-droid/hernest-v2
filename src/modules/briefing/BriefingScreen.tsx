@@ -61,8 +61,31 @@ export function BriefingScreen() {
   useEffect(() => {
     if (!user?.uid || !profile || hasFetched.current) return;
     hasFetched.current = true;
-    generate();
     getWeatherByLocation().then(w => { if (w) setWeather(w); });
+
+    // Check cache — only generate if stale (3 windows per day)
+    const checkCacheAndGenerate = async () => {
+      try {
+        const cached = await localDb.getTodayBriefing();
+        if (cached?.data && cached?.generatedAt) {
+          const now = new Date();
+          const cachedAt = new Date(cached.generatedAt);
+          const currentWindow = getTimeWindow();
+          const cachedHour = cachedAt.getHours();
+          const cachedWindow =
+            cachedHour >= 6 && cachedHour < 12 ? "morning" :
+            cachedHour >= 12 && cachedHour < 17 ? "afternoon" : "evening";
+          const sameDay = cachedAt.toDateString() === now.toDateString();
+          if (sameDay && cachedWindow === currentWindow) {
+            setBriefing(cached.data);
+            setLoading(false);
+            return;
+          }
+        }
+      } catch {}
+      generate();
+    };
+    checkCacheAndGenerate();
   }, [user?.uid, profile?.name]);
 
   // ── Generate full cross-module briefing ───────────────────────────

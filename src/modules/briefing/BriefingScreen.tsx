@@ -140,7 +140,7 @@ Return exactly 5 priorities. Include trips/travelBrief only if data exists.`;
         if (!parsed.greeting) parsed.greeting = "Good morning.";
       setBriefing(parsed);
       trackEvent("briefing_generated");
-      await localDb.cacheBriefing(parsed as any);
+      await localDb.cacheBriefing({ ...parsed, generatedAt: new Date().toISOString() } as any);
 
 
     } catch(e) {
